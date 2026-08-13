@@ -1,0 +1,1 @@
+"""Airacare Animal Detector package."""

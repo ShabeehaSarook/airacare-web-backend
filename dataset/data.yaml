@@ -1,0 +1,13 @@
+path: dataset
+train: images/train
+val: images/val
+test: images/test
+
+names:
+  0: person
+  1: dog
+  2: cat
+  3: horse
+  4: cow
+  5: deer
+  6: goat

@@ -1,0 +1,9 @@
+venv/
+__pycache__/
+*.pyc
+.env
+.DS_Store
+results/*
+!results/.gitkeep
+models/*.pt
+!models/.gitkeep

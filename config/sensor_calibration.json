@@ -1,0 +1,10 @@
+{
+  "camera_horizontal_fov_deg": 70.0,
+  "max_sensor_time_difference_seconds": 0.25,
+  "max_angle_difference_deg": 12.0,
+  "max_distance_difference_m": 10.0,
+  "distance_priority": ["RADAR", "DEPTH", "MOCK_RADAR", "CAMERA"],
+  "closing_speed_priority": ["RADAR", "MOCK_RADAR", "CAMERA"],
+  "sensor_stale_timeout_seconds": 0.5,
+  "notes": "Prototype Phase 15 fusion settings. Real radar/depth/thermal use requires hardware-specific calibration."
+}

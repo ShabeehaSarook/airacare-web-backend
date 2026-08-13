@@ -1,0 +1,23 @@
+Airacare Dataset Report
+========================
+
+Image counts by class:
+person: 0 images
+dog: 0 images
+cat: 0 images
+horse: 0 images
+cow: 0 images
+deer: 0 images
+goat: 0 images
+
+Total: 0 images
+
+Image dimensions: no readable images found
+
+Warnings:
+- None
+
+Notes:
+- This script does not delete, move, rename, annotate, or train on source images.
+- Near-duplicate detection uses a simple average hash and should be manually reviewed.
+- Annotation and YOLO train/val/test splitting belong to later phases.

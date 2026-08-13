@@ -1,0 +1,16 @@
+﻿{
+    "brightness_low_threshold": 85.0,
+    "brightness_very_dark_threshold": 35.0,
+    "contrast_low_threshold": 28.0,
+    "blur_low_threshold": 60.0,
+    "gamma_low_light": 1.45,
+    "gamma_very_dark": 1.85,
+    "clahe_enabled": true,
+    "clahe_clip_limit": 2.0,
+    "clahe_grid_size": 8,
+    "denoise_enabled": false,
+    "denoise_h": 4,
+    "sharpen_enabled": false,
+    "highlight_clip_percentile": 99.5,
+    "max_enhancement_time_warning_ms": 25.0
+}
