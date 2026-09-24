@@ -48,7 +48,7 @@ class WebDetectionConfig:
     imgsz: int = int(os.getenv("AIRACARE_INFERENCE_IMAGE_SIZE", "192"))
     iou: float = IOU_THRESHOLD
     device: str = "auto"
-    calibration_path: str = "config/webcam_calibration.json"
+    calibration_path: str = "config/phone_calibration.json"
     path_config_path: str = str(DEFAULT_PATH_CONFIG_PATH)
     vehicle_speed_kmh: float = 30.0
 
