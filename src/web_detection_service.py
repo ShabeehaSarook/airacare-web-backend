@@ -97,7 +97,7 @@ class WebDetectionService:
             logger.warning("could not tune torch threading: %s", error)
 
         if ANDROID_TFLITE_MODEL_PATH.exists() and os.getenv("AIRACARE_MODEL_BACKEND", "android_tflite") == "android_tflite":
-            model = AndroidTfliteDetector(num_threads=int(os.getenv("AIRACARE_TFLITE_THREADS", "1")))
+            model = AndroidTfliteDetector(num_threads=int(os.getenv("AIRACARE_TFLITE_THREADS", "4")))
             using_pretrained = False
             model_path = ANDROID_TFLITE_MODEL_PATH
         elif len(inspect.signature(load_detection_model).parameters) == 0:
