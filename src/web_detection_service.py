@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import inspect
 import logging
 import threading
 import time
@@ -78,7 +79,10 @@ class WebDetectionService:
     def load(self) -> None:
         if self.model is not None:
             return
-        model, using_pretrained, model_path = load_detection_model(self.config.model_mode)
+        if len(inspect.signature(load_detection_model).parameters) == 0:
+            model, using_pretrained, model_path = load_detection_model()
+        else:
+            model, using_pretrained, model_path = load_detection_model(self.config.model_mode)
         if model is None:
             raise RuntimeError(f"Could not load Airacare model from {CUSTOM_MODEL_PATH}")
         self.model = model
