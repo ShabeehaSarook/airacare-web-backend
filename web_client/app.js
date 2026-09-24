@@ -19,8 +19,9 @@ const firebaseConfig = {
   appId: "1:934286949654:android:a0c98c97bd4568e95ee437"
 };
 
-const DETECTION_INTERVAL_MS = 700;
-const MAX_CAPTURE_WIDTH = 416;
+const DETECTION_INTERVAL_MS = 5000;
+const MAX_CAPTURE_WIDTH = 320;
+const DETECTION_TIMEOUT_MS = 85000;
 const DEFAULT_API_BASE_URL = "https://airacare-web-backend.onrender.com";
 const API_BASE_URL = normalizeApiBaseUrl(
   new URLSearchParams(window.location.search).get("api") || DEFAULT_API_BASE_URL
@@ -50,6 +51,7 @@ let running = false;
 let loopTimer = null;
 let latestPosition = null;
 let lastSavedBySignature = new Map();
+let consecutiveDetectionErrors = 0;
 
 startButton.addEventListener("click", start);
 stopButton.addEventListener("click", stop);
@@ -127,27 +129,37 @@ async function detectLoop() {
   try {
     const image = captureFrame();
     const endpoint = `${API_BASE_URL}/api/detect`;
+    const controller = new AbortController();
+    const timeout = window.setTimeout(() => controller.abort(), DETECTION_TIMEOUT_MS);
     console.info("[Airacare] Detection endpoint:", endpoint);
-    const response = await fetch(endpoint, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        image,
-        ...freshPosition(),
-        deviceType: detectDeviceType()
-      })
-    });
+    const response = await fetch(
+      endpoint,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        signal: controller.signal,
+        body: JSON.stringify({
+          image,
+          ...freshPosition(),
+          deviceType: detectDeviceType()
+        })
+      }
+    );
+    window.clearTimeout(timeout);
     const text = await response.text();
     console.info("[Airacare] Detection status:", response.status);
     console.info("[Airacare] Detection response:", text);
     if (!response.ok) throw new Error(text || `HTTP ${response.status}`);
     const result = JSON.parse(text);
+    consecutiveDetectionErrors = 0;
+    setStatus("Detecting");
     drawDetections(result);
     updateLatest(result);
     await saveDetections(result);
   } catch (error) {
+    consecutiveDetectionErrors += 1;
     console.error(error);
-    setStatus("Detection error");
+    setStatus(consecutiveDetectionErrors >= 3 ? "Backend busy" : "Retrying");
   } finally {
     loopTimer = window.setTimeout(detectLoop, DETECTION_INTERVAL_MS);
   }
@@ -160,7 +172,7 @@ function captureFrame() {
   captureCanvas.width = Math.round(sourceWidth * scale);
   captureCanvas.height = Math.round(sourceHeight * scale);
   captureCtx.drawImage(video, 0, 0, captureCanvas.width, captureCanvas.height);
-  return captureCanvas.toDataURL("image/jpeg", 0.72);
+  return captureCanvas.toDataURL("image/jpeg", 0.55);
 }
 
 function drawDetections(result) {
