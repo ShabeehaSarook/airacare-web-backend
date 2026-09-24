@@ -57,6 +57,7 @@ def health():
         {
             "status": "ok",
             "service": "airacare-web-backend",
+            "build": "render-free-stability-192",
             "ok": True,
             "modelReady": model_error is None,
             "modelError": model_error,
