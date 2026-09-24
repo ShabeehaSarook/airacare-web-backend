@@ -83,6 +83,7 @@ class WebDetectionService:
         self.calibration = load_calibration(self.config.calibration_path)
         self.runtime_focal_length: float | None = None
         self.runtime_focal_warning: str | None = None
+        self.runtime_focal_resolution: tuple[int, int] | None = None
 
     def load(self) -> None:
         if self.model is not None:
@@ -128,10 +129,18 @@ class WebDetectionService:
         with self.lock:
             frame_height, frame_width = frame.shape[:2]
             logger.info("image decoded width=%s height=%s", frame_width, frame_height)
-            if self.calibration is not None and self.runtime_focal_length is None:
+            runtime_resolution = (frame_width, frame_height)
+            if self.calibration is not None and self.runtime_focal_resolution != runtime_resolution:
                 self.runtime_focal_length, self.runtime_focal_warning = focal_length_for_runtime_resolution(
                     self.calibration,
-                    (frame_width, frame_height),
+                    runtime_resolution,
+                )
+                self.runtime_focal_resolution = runtime_resolution
+                logger.info(
+                    "distance calibration runtime=%s focal=%.2f warning=%s",
+                    runtime_resolution,
+                    self.runtime_focal_length,
+                    self.runtime_focal_warning,
                 )
 
             results = self.model.predict(
@@ -275,6 +284,8 @@ class WebDetectionService:
                 "detections": detections,
                 "timestamp": timestamp_ms,
                 "calibrationWarning": self.runtime_focal_warning,
+                "calibrationPath": self.config.calibration_path,
+                "runtimeFocalLengthPixels": self.runtime_focal_length,
             }
 
     def _assign_track_id(self, class_name: str, bbox: tuple[float, float, float, float], now: float) -> int:

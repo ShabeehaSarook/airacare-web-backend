@@ -19,8 +19,8 @@ const firebaseConfig = {
   appId: "1:934286949654:android:a0c98c97bd4568e95ee437"
 };
 
-const DETECTION_INTERVAL_MS = 5000;
-const MAX_CAPTURE_WIDTH = 320;
+const DETECTION_INTERVAL_MS = 2500;
+const MAX_CAPTURE_WIDTH = 640;
 const DETECTION_TIMEOUT_MS = 85000;
 const DEFAULT_API_BASE_URL = "https://airacare-web-backend.onrender.com";
 const API_BASE_URL = normalizeApiBaseUrl(
@@ -52,6 +52,7 @@ let loopTimer = null;
 let latestPosition = null;
 let lastSavedBySignature = new Map();
 let consecutiveDetectionErrors = 0;
+let detectionInFlight = false;
 
 startButton.addEventListener("click", start);
 stopButton.addEventListener("click", stop);
@@ -126,6 +127,11 @@ function stop() {
 
 async function detectLoop() {
   if (!running) return;
+  if (detectionInFlight) {
+    loopTimer = window.setTimeout(detectLoop, DETECTION_INTERVAL_MS);
+    return;
+  }
+  detectionInFlight = true;
   try {
     const image = captureFrame();
     const endpoint = `${API_BASE_URL}/api/detect`;
@@ -141,7 +147,13 @@ async function detectLoop() {
         body: JSON.stringify({
           image,
           ...freshPosition(),
-          deviceType: detectDeviceType()
+          deviceType: detectDeviceType(),
+          captureWidth: captureCanvas.width,
+          captureHeight: captureCanvas.height,
+          videoWidth: video.videoWidth || null,
+          videoHeight: video.videoHeight || null,
+          screenOrientation: screen.orientation?.type || null,
+          devicePixelRatio: window.devicePixelRatio || 1
         })
       }
     );
@@ -161,6 +173,7 @@ async function detectLoop() {
     console.error(error);
     setStatus(consecutiveDetectionErrors >= 3 ? "Backend busy" : "Retrying");
   } finally {
+    detectionInFlight = false;
     loopTimer = window.setTimeout(detectLoop, DETECTION_INTERVAL_MS);
   }
 }
@@ -172,7 +185,7 @@ function captureFrame() {
   captureCanvas.width = Math.round(sourceWidth * scale);
   captureCanvas.height = Math.round(sourceHeight * scale);
   captureCtx.drawImage(video, 0, 0, captureCanvas.width, captureCanvas.height);
-  return captureCanvas.toDataURL("image/jpeg", 0.55);
+  return captureCanvas.toDataURL("image/jpeg", 0.72);
 }
 
 function drawDetections(result) {

@@ -19,6 +19,8 @@ from src.config import KNOWN_OBJECT_HEIGHTS_METERS
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_CALIBRATION_PATH = PROJECT_ROOT / "config" / "camera_calibration.json"
+WEBCAM_CALIBRATION_PATH = PROJECT_ROOT / "config" / "webcam_calibration.json"
+PHONE_CALIBRATION_PATH = PROJECT_ROOT / "config" / "phone_calibration.json"
 DISTANCE_HISTORY_LIMIT = 5
 MIN_BBOX_HEIGHT_PIXELS = 4.0
 STALE_DISTANCE_SECONDS = 2.0
@@ -71,7 +73,7 @@ def focal_length_for_runtime_resolution(
     calibration: dict[str, Any],
     runtime_resolution: tuple[int, int],
 ) -> tuple[float, str | None]:
-    """Scale focal length when runtime frame height differs from calibration height."""
+    """Scale focal length when runtime frame size differs from calibration size."""
     focal_length = float(calibration["focal_length_pixels"])
     calibration_resolution = get_calibration_resolution(calibration)
     runtime_width, runtime_height = runtime_resolution
@@ -83,13 +85,26 @@ def focal_length_for_runtime_resolution(
     if calibration_width == runtime_width and calibration_height == runtime_height:
         return focal_length, None
 
-    height_scale = runtime_height / calibration_height
-    width_scale = runtime_width / calibration_width
-    scaled_focal_length = focal_length * height_scale
-
     calibration_aspect = calibration_width / calibration_height
     runtime_aspect = runtime_width / runtime_height
     aspect_delta = abs(calibration_aspect - runtime_aspect) / calibration_aspect
+
+    swapped_width, swapped_height = calibration_height, calibration_width
+    swapped_aspect = swapped_width / swapped_height
+    swapped_aspect_delta = abs(swapped_aspect - runtime_aspect) / swapped_aspect
+    if aspect_delta > 0.05 and swapped_aspect_delta <= 0.05:
+        height_scale = runtime_height / swapped_height
+        width_scale = runtime_width / swapped_width
+        scaled_focal_length = focal_length * ((height_scale + width_scale) / 2.0)
+        return (
+            scaled_focal_length,
+            "Runtime orientation differs from calibration; focal length was scaled using swapped phone dimensions.",
+        )
+
+    height_scale = runtime_height / calibration_height
+    width_scale = runtime_width / calibration_width
+    scaled_focal_length = focal_length * ((height_scale + width_scale) / 2.0)
+
     if aspect_delta > 0.05:
         return (
             scaled_focal_length,
