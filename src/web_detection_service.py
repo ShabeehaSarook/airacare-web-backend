@@ -5,10 +5,17 @@ from __future__ import annotations
 import base64
 import inspect
 import logging
+import os
 import threading
 import time
 from dataclasses import dataclass, field
 from typing import Any
+
+os.environ.setdefault("OMP_NUM_THREADS", "1")
+os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
+os.environ.setdefault("MKL_NUM_THREADS", "1")
+os.environ.setdefault("NUMEXPR_NUM_THREADS", "1")
+os.environ.setdefault("VECLIB_MAXIMUM_THREADS", "1")
 
 import cv2
 import numpy as np
@@ -79,6 +86,14 @@ class WebDetectionService:
     def load(self) -> None:
         if self.model is not None:
             return
+        try:
+            import torch
+
+            torch.set_num_threads(int(os.getenv("AIRACARE_TORCH_THREADS", "1")))
+            torch.set_num_interop_threads(int(os.getenv("AIRACARE_TORCH_INTEROP_THREADS", "1")))
+        except Exception as error:
+            logger.warning("could not tune torch threading: %s", error)
+
         if len(inspect.signature(load_detection_model).parameters) == 0:
             model, using_pretrained, model_path = load_detection_model()
         else:
