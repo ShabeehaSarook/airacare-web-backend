@@ -8,9 +8,14 @@ TARGET_CLASSES = [
     "cow",
     "deer",
     "goat",
+    "elephant",
 ]
 
 TARGET_CLASS_SET = set(TARGET_CLASSES)
+ANIMAL_CLASSES = [
+    class_name for class_name in TARGET_CLASSES if class_name != "person"
+]
+ANIMAL_CLASS_SET = set(ANIMAL_CLASSES)
 # Approximate representative object heights used by Phase 09 monocular
 # distance estimation. Real people and animals vary in size, so distances
 # calculated from these values are estimates, not exact measurements.
@@ -22,6 +27,7 @@ KNOWN_OBJECT_HEIGHTS_METERS = {
     "cow": 1.50,
     "deer": 1.20,
     "goat": 0.75,
+    "elephant": 2.70,
 }
 
 # Phase 12 prototype risk thresholds. These are transparent, configurable
@@ -47,3 +53,4 @@ WARNING_CONFIG = {
     "high_cooldown_seconds": 1.0,
     "stale_track_seconds": 2.0,
 }
+

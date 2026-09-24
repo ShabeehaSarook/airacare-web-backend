@@ -21,6 +21,7 @@ import cv2
 import numpy as np
 
 from src.config import TARGET_CLASS_SET
+from src.android_tflite_detector import ANDROID_TFLITE_MODEL_PATH, AndroidTfliteDetector
 from src.detector import (
     CONFIDENCE_THRESHOLD,
     CUSTOM_MODEL_PATH,
@@ -94,7 +95,11 @@ class WebDetectionService:
         except Exception as error:
             logger.warning("could not tune torch threading: %s", error)
 
-        if len(inspect.signature(load_detection_model).parameters) == 0:
+        if ANDROID_TFLITE_MODEL_PATH.exists() and os.getenv("AIRACARE_MODEL_BACKEND", "android_tflite") == "android_tflite":
+            model = AndroidTfliteDetector(num_threads=int(os.getenv("AIRACARE_TFLITE_THREADS", "1")))
+            using_pretrained = False
+            model_path = ANDROID_TFLITE_MODEL_PATH
+        elif len(inspect.signature(load_detection_model).parameters) == 0:
             model, using_pretrained, model_path = load_detection_model()
         else:
             model, using_pretrained, model_path = load_detection_model(self.config.model_mode)

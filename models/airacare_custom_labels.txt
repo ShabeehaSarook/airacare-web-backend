@@ -1,0 +1,8 @@
+person
+dog
+cat
+horse
+cow
+deer
+goat
+elephant
