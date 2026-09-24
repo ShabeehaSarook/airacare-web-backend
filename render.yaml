@@ -9,3 +9,9 @@ services:
     envVars:
       - key: PYTHON_VERSION
         value: 3.11.9
+      - key: AIRACARE_INFERENCE_IMAGE_SIZE
+        value: 320
+      - key: AIRACARE_TORCH_THREADS
+        value: 1
+      - key: AIRACARE_TORCH_INTEROP_THREADS
+        value: 1
