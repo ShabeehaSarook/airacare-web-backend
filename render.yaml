@@ -1,0 +1,11 @@
+services:
+  - type: web
+    name: airacare-ml-backend
+    env: python
+    plan: free
+    buildCommand: pip install -r requirements-web.txt
+    startCommand: gunicorn web_backend:app --bind 0.0.0.0:$PORT --workers 1 --threads 2 --timeout 180
+    autoDeploy: true
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.9

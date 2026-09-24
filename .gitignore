@@ -6,4 +6,5 @@ __pycache__/
 results/*
 !results/.gitkeep
 models/*.pt
+!models/airacare_animal_detector_best.pt
 !models/.gitkeep
