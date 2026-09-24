@@ -19,9 +19,9 @@ const firebaseConfig = {
   appId: "1:934286949654:android:a0c98c97bd4568e95ee437"
 };
 
-const DETECTION_INTERVAL_MS = 2500;
-const MAX_CAPTURE_WIDTH = 640;
-const DETECTION_TIMEOUT_MS = 85000;
+const DETECTION_INTERVAL_MS = 900;
+const MAX_CAPTURE_WIDTH = 512;
+const DETECTION_TIMEOUT_MS = 30000;
 const DEFAULT_API_BASE_URL = "https://airacare-web-backend.onrender.com";
 const API_BASE_URL = normalizeApiBaseUrl(
   new URLSearchParams(window.location.search).get("api") || DEFAULT_API_BASE_URL
@@ -160,14 +160,21 @@ async function detectLoop() {
     window.clearTimeout(timeout);
     const text = await response.text();
     console.info("[Airacare] Detection status:", response.status);
-    console.info("[Airacare] Detection response:", text);
     if (!response.ok) throw new Error(text || `HTTP ${response.status}`);
     const result = JSON.parse(text);
+    console.info(
+      "[Airacare] Detection result:",
+      `${result.detections?.length || 0} objects`,
+      `${result.processingTimeMs || "?"}ms`
+    );
     consecutiveDetectionErrors = 0;
     setStatus("Detecting");
     drawDetections(result);
     updateLatest(result);
-    await saveDetections(result);
+    saveDetections(result).catch((saveError) => {
+      firebaseStatus.textContent = "Error";
+      console.error(saveError);
+    });
   } catch (error) {
     consecutiveDetectionErrors += 1;
     console.error(error);
@@ -185,7 +192,7 @@ function captureFrame() {
   captureCanvas.width = Math.round(sourceWidth * scale);
   captureCanvas.height = Math.round(sourceHeight * scale);
   captureCtx.drawImage(video, 0, 0, captureCanvas.width, captureCanvas.height);
-  return captureCanvas.toDataURL("image/jpeg", 0.72);
+  return captureCanvas.toDataURL("image/jpeg", 0.62);
 }
 
 function drawDetections(result) {

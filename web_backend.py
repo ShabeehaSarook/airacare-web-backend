@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 import logging
 import os
+import time
 import traceback
 from typing import Any
 
@@ -83,6 +84,7 @@ def detect():
     try:
         logger.info("image received bytes_or_chars=%s", len(image) if isinstance(image, str) else "not-string")
         logger.info("inference started")
+        started_at = time.perf_counter()
         result = service.detect_data_url(
             image,
             {
@@ -93,7 +95,13 @@ def detect():
                 "deviceType": payload.get("deviceType"),
             },
         )
-        logger.info("inference completed detections=%s", len(result.get("detections", [])))
+        processing_time_ms = int((time.perf_counter() - started_at) * 1000)
+        result["processingTimeMs"] = processing_time_ms
+        logger.info(
+            "inference completed detections=%s processing_ms=%s",
+            len(result.get("detections", [])),
+            processing_time_ms,
+        )
     except Exception as error:
         logger.error("detect failed: %s\n%s", error, traceback.format_exc())
         return jsonify({"ok": False, "error": str(error)}), 400
