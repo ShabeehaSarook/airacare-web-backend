@@ -21,7 +21,10 @@ const firebaseConfig = {
 
 const DETECTION_INTERVAL_MS = 700;
 const MAX_CAPTURE_WIDTH = 640;
-const API_BASE_URL = new URLSearchParams(window.location.search).get("api") || "";
+const DEFAULT_API_BASE_URL = "https://airacare-web-backend.onrender.com";
+const API_BASE_URL = normalizeApiBaseUrl(
+  new URLSearchParams(window.location.search).get("api") || DEFAULT_API_BASE_URL
+);
 
 const firebaseApp = initializeApp(firebaseConfig);
 const db = getFirestore(firebaseApp);
@@ -54,12 +57,21 @@ window.addEventListener("resize", resizeOverlay);
 
 listenToRecentDetections();
 checkBackend();
+console.info("[Airacare] Backend base URL:", API_BASE_URL);
 
 async function checkBackend() {
+  const endpoint = `${API_BASE_URL}/api/health`;
+  console.info("[Airacare] Health endpoint:", endpoint);
   try {
-    const response = await fetch(`${API_BASE_URL}/api/health`, { cache: "no-store" });
-    const data = await response.json();
-    modelStatus.textContent = data.usingPretrainedFallback
+    const response = await fetch(endpoint, { cache: "no-store" });
+    const text = await response.text();
+    console.info("[Airacare] Health status:", response.status);
+    console.info("[Airacare] Health response:", text);
+    if (!response.ok) throw new Error(text || `HTTP ${response.status}`);
+    const data = JSON.parse(text);
+    modelStatus.textContent = data.modelReady === false
+      ? "Backend online, model error"
+      : data.usingPretrainedFallback
       ? "Pretrained fallback loaded"
       : "Airacare model loaded";
   } catch (error) {
@@ -114,7 +126,9 @@ async function detectLoop() {
   if (!running) return;
   try {
     const image = captureFrame();
-    const response = await fetch(`${API_BASE_URL}/api/detect`, {
+    const endpoint = `${API_BASE_URL}/api/detect`;
+    console.info("[Airacare] Detection endpoint:", endpoint);
+    const response = await fetch(endpoint, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -123,8 +137,11 @@ async function detectLoop() {
         deviceType: detectDeviceType()
       })
     });
-    if (!response.ok) throw new Error(await response.text());
-    const result = await response.json();
+    const text = await response.text();
+    console.info("[Airacare] Detection status:", response.status);
+    console.info("[Airacare] Detection response:", text);
+    if (!response.ok) throw new Error(text || `HTTP ${response.status}`);
+    const result = JSON.parse(text);
     drawDetections(result);
     updateLatest(result);
     await saveDetections(result);
@@ -287,6 +304,10 @@ function detectDeviceType() {
   if (/iPad/i.test(ua)) return "iPad";
   if (/Android/i.test(ua)) return "Android";
   return "Web";
+}
+
+function normalizeApiBaseUrl(url) {
+  return String(url || "").trim().replace(/\/+$/, "");
 }
 
 function playWarningTone() {

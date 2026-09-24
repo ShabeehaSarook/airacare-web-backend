@@ -1,6 +1,6 @@
 services:
   - type: web
-    name: airacare-ml-backend
+    name: airacare-web-backend
     env: python
     plan: free
     buildCommand: pip install -r requirements-web.txt

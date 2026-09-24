@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import logging
 import threading
 import time
 from dataclasses import dataclass, field
@@ -27,6 +28,8 @@ from src.relative_motion import CLOSING_THRESHOLD_MPS, RelativeMotionAnalyzer
 from src.risk import RiskResult, RiskSmoother, evaluate_risk, scene_risk
 from src.tracker import TrackHistory
 from src.warning import NONE, RISK_TO_WARNING, WarningCandidate, WarningManager
+
+logger = logging.getLogger("airacare-web-backend")
 
 
 @dataclass
@@ -82,6 +85,12 @@ class WebDetectionService:
         self.using_pretrained_fallback = using_pretrained
         self.model_path = model_path
         self.model_names = normalize_model_names(getattr(model, "names", {}))
+        logger.info(
+            "model loaded path=%s fallback=%s names=%s",
+            self.model_path,
+            self.using_pretrained_fallback,
+            self.model_names,
+        )
 
     def detect_data_url(self, image_data_url: str, metadata: dict[str, Any] | None = None) -> dict[str, Any]:
         frame = _decode_data_url(image_data_url)
@@ -94,6 +103,7 @@ class WebDetectionService:
 
         with self.lock:
             frame_height, frame_width = frame.shape[:2]
+            logger.info("image decoded width=%s height=%s", frame_width, frame_height)
             if self.calibration is not None and self.runtime_focal_length is None:
                 self.runtime_focal_length, self.runtime_focal_warning = focal_length_for_runtime_resolution(
                     self.calibration,

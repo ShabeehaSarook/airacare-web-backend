@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 from pathlib import Path
+import logging
 import os
+import traceback
 from typing import Any
 
 from flask import Flask, jsonify, request, send_from_directory
@@ -17,11 +19,26 @@ WEB_DIR = PROJECT_ROOT / "web_client"
 
 service = WebDetectionService(WebDetectionConfig())
 app = Flask(__name__, static_folder=str(WEB_DIR), static_url_path="")
+logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
+logger = logging.getLogger("airacare-web-backend")
+
+ALLOWED_ORIGINS = {
+    "https://airacare-animal-safety.web.app",
+    "http://localhost:8000",
+    "http://127.0.0.1:8000",
+    "http://localhost:5000",
+    "http://127.0.0.1:5000",
+}
 
 
 @app.after_request
 def add_cors_headers(response):
-    response.headers["Access-Control-Allow-Origin"] = "*"
+    origin = request.headers.get("Origin")
+    if origin in ALLOWED_ORIGINS or (origin and origin.startswith("http://localhost:")):
+        response.headers["Access-Control-Allow-Origin"] = origin
+        response.headers["Vary"] = "Origin"
+    elif not origin:
+        response.headers["Access-Control-Allow-Origin"] = "*"
     response.headers["Access-Control-Allow-Headers"] = "Content-Type"
     response.headers["Access-Control-Allow-Methods"] = "GET,POST,OPTIONS"
     return response
@@ -29,10 +46,20 @@ def add_cors_headers(response):
 
 @app.get("/api/health")
 def health():
-    service.load()
+    logger.info("health request received url=%s", request.url)
+    model_error = None
+    try:
+        service.load()
+    except Exception as error:
+        model_error = str(error)
+        logger.error("health model load failed: %s\n%s", error, traceback.format_exc())
     return jsonify(
         {
+            "status": "ok",
+            "service": "airacare-web-backend",
             "ok": True,
+            "modelReady": model_error is None,
+            "modelError": model_error,
             "targetClasses": TARGET_CLASSES,
             "modelPath": str(service.model_path) if service.model_path else None,
             "usingPretrainedFallback": service.using_pretrained_fallback,
@@ -44,12 +71,16 @@ def health():
 def detect():
     if request.method == "OPTIONS":
         return ("", 204)
+    logger.info("detect request received url=%s", request.url)
     payload: dict[str, Any] = request.get_json(silent=True) or {}
     image = payload.get("image")
     if not image:
+        logger.warning("detect request missing image field")
         return jsonify({"ok": False, "error": "Missing image"}), 400
 
     try:
+        logger.info("image received bytes_or_chars=%s", len(image) if isinstance(image, str) else "not-string")
+        logger.info("inference started")
         result = service.detect_data_url(
             image,
             {
@@ -60,7 +91,9 @@ def detect():
                 "deviceType": payload.get("deviceType"),
             },
         )
+        logger.info("inference completed detections=%s", len(result.get("detections", [])))
     except Exception as error:
+        logger.error("detect failed: %s\n%s", error, traceback.format_exc())
         return jsonify({"ok": False, "error": str(error)}), 400
     return jsonify(result)
 
