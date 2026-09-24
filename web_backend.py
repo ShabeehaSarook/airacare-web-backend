@@ -62,6 +62,7 @@ def health():
             "modelError": model_error,
             "targetClasses": TARGET_CLASSES,
             "modelPath": str(service.model_path) if service.model_path else None,
+            "inferenceImageSize": service.config.imgsz,
             "usingPretrainedFallback": service.using_pretrained_fallback,
         }
     )

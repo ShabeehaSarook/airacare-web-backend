@@ -20,7 +20,7 @@ const firebaseConfig = {
 };
 
 const DETECTION_INTERVAL_MS = 700;
-const MAX_CAPTURE_WIDTH = 640;
+const MAX_CAPTURE_WIDTH = 416;
 const DEFAULT_API_BASE_URL = "https://airacare-web-backend.onrender.com";
 const API_BASE_URL = normalizeApiBaseUrl(
   new URLSearchParams(window.location.search).get("api") || DEFAULT_API_BASE_URL

@@ -44,7 +44,7 @@ logger = logging.getLogger("airacare-web-backend")
 class WebDetectionConfig:
     model_mode: str = "custom"
     confidence: float = CONFIDENCE_THRESHOLD
-    imgsz: int = int(os.getenv("AIRACARE_INFERENCE_IMAGE_SIZE", str(INFERENCE_IMAGE_SIZE)))
+    imgsz: int = int(os.getenv("AIRACARE_INFERENCE_IMAGE_SIZE", "320"))
     iou: float = IOU_THRESHOLD
     device: str = "auto"
     calibration_path: str = "config/webcam_calibration.json"
