@@ -45,6 +45,10 @@
           <button id="startButton" type="button">Start</button>
           <button id="stopButton" type="button" disabled>Stop</button>
         </div>
+        <button id="captureStoreButton" class="capture-store-button" type="button" hidden disabled>
+          Capture &amp; Store
+        </button>
+        <p id="captureStoreStatus" class="capture-store-status" aria-live="polite"></p>
 
         <div class="target-strip" aria-label="Target classes">
           <span>person</span>
@@ -61,10 +65,48 @@
           <span id="modelStatus">Model waiting</span>
         </div>
         <div id="historyList" class="history-list"></div>
+
+        <div class="collection-header">
+          <h2>My Collection</h2>
+          <div class="collection-tabs" aria-label="Collection filters">
+            <button class="collection-tab active" data-filter="all" type="button">All</button>
+            <button class="collection-tab" data-filter="dog" type="button">Dogs</button>
+            <button class="collection-tab" data-filter="cat" type="button">Cats</button>
+          </div>
+        </div>
+        <div id="collectionList" class="collection-list"></div>
       </section>
     </main>
 
     <canvas id="captureCanvas" hidden></canvas>
+    <canvas id="petCropCanvas" hidden></canvas>
+
+    <div id="captureModal" class="modal-backdrop" hidden>
+      <section class="capture-modal" role="dialog" aria-modal="true" aria-labelledby="captureModalTitle">
+        <h2 id="captureModalTitle">Captured Pet</h2>
+        <img id="capturePreviewImage" alt="Captured pet sticker preview" />
+        <dl class="capture-metadata">
+          <div>
+            <dt>Class</dt>
+            <dd id="capturePreviewLabel">N/A</dd>
+          </div>
+          <div>
+            <dt>Confidence</dt>
+            <dd id="capturePreviewConfidence">N/A</dd>
+          </div>
+          <div>
+            <dt>Captured</dt>
+            <dd id="capturePreviewTime">N/A</dd>
+          </div>
+        </dl>
+        <p id="capturePreviewNote" class="capture-store-status"></p>
+        <div class="button-row">
+          <button id="cancelCaptureButton" type="button">Cancel</button>
+          <button id="saveCaptureButton" type="button">Save to Collection</button>
+        </div>
+      </section>
+    </div>
+
     <script type="module" src="./app.js"></script>
   </body>
 </html>

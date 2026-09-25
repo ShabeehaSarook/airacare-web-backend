@@ -3,13 +3,16 @@
 from __future__ import annotations
 
 from pathlib import Path
+import base64
 import logging
 import os
 import time
 import traceback
 from typing import Any
 
+import cv2
 from flask import Flask, jsonify, request, send_from_directory
+import numpy as np
 
 from src.config import TARGET_CLASSES
 from src.web_detection_service import WebDetectionConfig, WebDetectionService
@@ -106,6 +109,107 @@ def detect():
         logger.error("detect failed: %s\n%s", error, traceback.format_exc())
         return jsonify({"ok": False, "error": str(error)}), 400
     return jsonify(result)
+
+
+@app.route("/api/remove-background", methods=["POST", "OPTIONS"])
+def remove_background():
+    if request.method == "OPTIONS":
+        return ("", 204)
+    logger.info("background removal request received url=%s", request.url)
+    payload: dict[str, Any] = request.get_json(silent=True) or {}
+    image = payload.get("image")
+    label = str(payload.get("label") or "").lower()
+    if label not in {"dog", "cat"}:
+        return jsonify({"ok": False, "error": "Background removal is only available for dog/cat"}), 400
+    if not image:
+        return jsonify({"ok": False, "error": "Missing image"}), 400
+
+    try:
+        started_at = time.perf_counter()
+        frame = _decode_data_url(image)
+        png_data_url, background_removed, method = _remove_background_grabcut(frame)
+        processing_time_ms = int((time.perf_counter() - started_at) * 1000)
+        logger.info(
+            "background removal completed label=%s method=%s removed=%s processing_ms=%s",
+            label,
+            method,
+            background_removed,
+            processing_time_ms,
+        )
+        return jsonify(
+            {
+                "ok": True,
+                "image": png_data_url,
+                "backgroundRemoved": background_removed,
+                "method": method,
+                "processingTimeMs": processing_time_ms,
+            }
+        )
+    except Exception as error:
+        logger.error("background removal failed: %s\n%s", error, traceback.format_exc())
+        return jsonify({"ok": False, "error": str(error)}), 400
+
+
+def _decode_data_url(image_data_url: str) -> np.ndarray:
+    if "," in image_data_url:
+        image_data_url = image_data_url.split(",", 1)[1]
+    image_bytes = base64.b64decode(image_data_url)
+    encoded = np.frombuffer(image_bytes, dtype=np.uint8)
+    frame = cv2.imdecode(encoded, cv2.IMREAD_COLOR)
+    if frame is None or frame.size == 0:
+        raise ValueError("Could not decode image")
+    return frame
+
+
+def _remove_background_grabcut(frame: np.ndarray) -> tuple[str, bool, str]:
+    height, width = frame.shape[:2]
+    if width < 8 or height < 8:
+        return _encode_png_with_alpha(frame, np.full((height, width), 255, dtype=np.uint8)), False, "fallback_too_small"
+
+    process_frame = frame
+    process_height, process_width = height, width
+    max_segmentation_side = int(os.getenv("AIRACARE_BG_REMOVE_MAX_SIDE", "512"))
+    scale = min(1.0, max_segmentation_side / float(max(width, height)))
+    if scale < 1.0:
+        process_width = max(8, int(round(width * scale)))
+        process_height = max(8, int(round(height * scale)))
+        process_frame = cv2.resize(frame, (process_width, process_height), interpolation=cv2.INTER_AREA)
+
+    border_x = max(2, int(process_width * 0.06))
+    border_y = max(2, int(process_height * 0.06))
+    rect = (
+        border_x,
+        border_y,
+        max(1, process_width - border_x * 2),
+        max(1, process_height - border_y * 2),
+    )
+    mask = np.zeros((process_height, process_width), dtype=np.uint8)
+    bgd_model = np.zeros((1, 65), dtype=np.float64)
+    fgd_model = np.zeros((1, 65), dtype=np.float64)
+    cv2.grabCut(process_frame, mask, rect, bgd_model, fgd_model, 3, cv2.GC_INIT_WITH_RECT)
+    foreground_mask = np.where((mask == cv2.GC_FGD) | (mask == cv2.GC_PR_FGD), 255, 0).astype(np.uint8)
+
+    foreground_ratio = float(np.count_nonzero(foreground_mask)) / float(max(1, process_width * process_height))
+    if foreground_ratio < 0.04 or foreground_ratio > 0.96:
+        return _encode_png_with_alpha(frame, np.full((height, width), 255, dtype=np.uint8)), False, "fallback_grabcut_uncertain"
+
+    kernel_size = max(3, int(round(min(process_width, process_height) * 0.025)) | 1)
+    kernel = np.ones((kernel_size, kernel_size), dtype=np.uint8)
+    foreground_mask = cv2.morphologyEx(foreground_mask, cv2.MORPH_CLOSE, kernel, iterations=1)
+    foreground_mask = cv2.morphologyEx(foreground_mask, cv2.MORPH_OPEN, kernel, iterations=1)
+    foreground_mask = cv2.GaussianBlur(foreground_mask, (5, 5), 0)
+    if foreground_mask.shape[:2] != (height, width):
+        foreground_mask = cv2.resize(foreground_mask, (width, height), interpolation=cv2.INTER_LINEAR)
+    return _encode_png_with_alpha(frame, foreground_mask), True, "opencv_grabcut"
+
+
+def _encode_png_with_alpha(frame: np.ndarray, alpha: np.ndarray) -> str:
+    rgba = cv2.cvtColor(frame, cv2.COLOR_BGR2BGRA)
+    rgba[:, :, 3] = alpha
+    ok, encoded = cv2.imencode(".png", rgba)
+    if not ok:
+        raise ValueError("Could not encode transparent PNG")
+    return "data:image/png;base64," + base64.b64encode(encoded.tobytes()).decode("ascii")
 
 
 @app.get("/")
