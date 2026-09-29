@@ -8,7 +8,6 @@ TARGET_CLASSES = [
     "cow",
     "deer",
     "goat",
-    "elephant",
 ]
 
 TARGET_CLASS_SET = set(TARGET_CLASSES)

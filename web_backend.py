@@ -57,6 +57,10 @@ def health():
     except Exception as error:
         model_error = str(error)
         logger.error("health model load failed: %s\n%s", error, traceback.format_exc())
+    loaded_classes = [
+        service.model_names[class_id]
+        for class_id in sorted(service.model_names)
+    ] if service.model_names else TARGET_CLASSES
     return jsonify(
         {
             "status": "ok",
@@ -65,8 +69,10 @@ def health():
             "ok": True,
             "modelReady": model_error is None,
             "modelError": model_error,
-            "targetClasses": TARGET_CLASSES,
+            "targetClasses": loaded_classes,
             "modelPath": str(service.model_path) if service.model_path else None,
+            "modelNames": service.model_names,
+            "modelBackend": os.getenv("AIRACARE_MODEL_BACKEND", "yolo_pt"),
             "inferenceImageSize": service.config.imgsz,
             "usingPretrainedFallback": service.using_pretrained_fallback,
         }

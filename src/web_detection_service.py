@@ -45,7 +45,7 @@ logger = logging.getLogger("airacare-web-backend")
 class WebDetectionConfig:
     model_mode: str = "custom"
     confidence: float = CONFIDENCE_THRESHOLD
-    imgsz: int = int(os.getenv("AIRACARE_INFERENCE_IMAGE_SIZE", "192"))
+    imgsz: int = int(os.getenv("AIRACARE_INFERENCE_IMAGE_SIZE", "640"))
     iou: float = IOU_THRESHOLD
     device: str = "auto"
     calibration_path: str = "config/phone_calibration.json"
@@ -96,14 +96,19 @@ class WebDetectionService:
         except Exception as error:
             logger.warning("could not tune torch threading: %s", error)
 
-        if ANDROID_TFLITE_MODEL_PATH.exists() and os.getenv("AIRACARE_MODEL_BACKEND", "android_tflite") == "android_tflite":
+        backend = os.getenv("AIRACARE_MODEL_BACKEND", "yolo_pt")
+        model = None
+        using_pretrained = False
+        model_path = None
+        if backend != "android_tflite":
+            if len(inspect.signature(load_detection_model).parameters) == 0:
+                model, using_pretrained, model_path = load_detection_model()
+            else:
+                model, using_pretrained, model_path = load_detection_model(self.config.model_mode)
+        elif ANDROID_TFLITE_MODEL_PATH.exists():
             model = AndroidTfliteDetector(num_threads=int(os.getenv("AIRACARE_TFLITE_THREADS", "4")))
             using_pretrained = False
             model_path = ANDROID_TFLITE_MODEL_PATH
-        elif len(inspect.signature(load_detection_model).parameters) == 0:
-            model, using_pretrained, model_path = load_detection_model()
-        else:
-            model, using_pretrained, model_path = load_detection_model(self.config.model_mode)
         if model is None:
             raise RuntimeError(f"Could not load Airacare model from {CUSTOM_MODEL_PATH}")
         self.model = model
@@ -111,10 +116,12 @@ class WebDetectionService:
         self.model_path = model_path
         self.model_names = normalize_model_names(getattr(model, "names", {}))
         logger.info(
-            "model loaded path=%s fallback=%s names=%s",
+            "model loaded backend=%s path=%s fallback=%s names=%s inference_imgsz=%s",
+            backend,
             self.model_path,
             self.using_pretrained_fallback,
             self.model_names,
+            self.config.imgsz,
         )
 
     def detect_data_url(self, image_data_url: str, metadata: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -154,13 +161,29 @@ class WebDetectionService:
             now = time.perf_counter()
             result = results[0] if results else None
             boxes = getattr(result, "boxes", []) if result is not None else []
+            logger.info("raw model boxes count=%s modelPath=%s", len(boxes), self.model_path)
             detections: list[dict[str, Any]] = []
             risks: list[RiskResult] = []
             warning_candidates: list[WarningCandidate] = []
 
             self._cleanup_web_tracks(now)
 
-            for detected_box in _class_agnostic_nms(list(boxes)):
+            raw_boxes = list(boxes)
+            for raw_box in raw_boxes:
+                raw_class_id = int(raw_box.cls[0])
+                raw_label = self.model_names.get(raw_class_id, f"class_{raw_class_id}").lower()
+                raw_confidence = float(raw_box.conf[0])
+                raw_bbox = tuple(float(value) for value in raw_box.xyxy[0].tolist())
+                logger.info(
+                    "raw detection modelPath=%s rawClassId=%s mappedLabel=%s confidence=%.4f bbox=%s",
+                    self.model_path,
+                    raw_class_id,
+                    raw_label,
+                    raw_confidence,
+                    tuple(round(value, 1) for value in raw_bbox),
+                )
+
+            for detected_box in _class_agnostic_nms(raw_boxes):
                 class_id = int(detected_box.cls[0])
                 class_name = self.model_names.get(class_id, f"class_{class_id}").lower()
                 if class_name not in TARGET_CLASS_SET:

@@ -33,7 +33,7 @@ const firebaseConfig = {
 };
 
 const DETECTION_INTERVAL_MS = 900;
-const MAX_CAPTURE_WIDTH = 512;
+const MAX_CAPTURE_WIDTH = 640;
 const DETECTION_TIMEOUT_MS = 30000;
 const PET_LABELS = new Set(["dog", "cat"]);
 const STABLE_PET_FRAMES = 2;
@@ -249,7 +249,7 @@ function captureFrame() {
   captureCanvas.width = Math.round(sourceWidth * scale);
   captureCanvas.height = Math.round(sourceHeight * scale);
   captureCtx.drawImage(video, 0, 0, captureCanvas.width, captureCanvas.height);
-  return captureCanvas.toDataURL("image/jpeg", 0.62);
+  return captureCanvas.toDataURL("image/jpeg", 0.72);
 }
 
 function drawDetections(result) {
