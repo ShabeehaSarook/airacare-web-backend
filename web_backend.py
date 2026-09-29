@@ -4,10 +4,12 @@ from __future__ import annotations
 
 from pathlib import Path
 import base64
+from io import BytesIO
 import logging
 import os
 import time
 import traceback
+import uuid
 from typing import Any
 
 import cv2
@@ -33,6 +35,47 @@ ALLOWED_ORIGINS = {
     "http://localhost:5000",
     "http://127.0.0.1:5000",
 }
+
+MAX_CAPTURE_UPLOAD_BYTES = int(os.getenv("AIRACARE_CAPTURE_UPLOAD_MAX_BYTES", str(5 * 1024 * 1024)))
+CLOUDINARY_FOLDER = os.getenv("AIRACARE_CLOUDINARY_FOLDER", "airacare/captured_pets")
+
+
+def _cloudinary_configured() -> bool:
+    if not _cloudinary_sdk_available():
+        return False
+    if os.getenv("CLOUDINARY_URL"):
+        return True
+    required = ("CLOUDINARY_CLOUD_NAME", "CLOUDINARY_API_KEY", "CLOUDINARY_API_SECRET")
+    return all(os.getenv(name) for name in required)
+
+
+def _cloudinary_sdk_available() -> bool:
+    try:
+        import cloudinary  # noqa: F401
+        import cloudinary.uploader  # noqa: F401
+    except ImportError:
+        return False
+    return True
+
+
+def _configure_cloudinary():
+    import cloudinary
+
+    if not os.getenv("CLOUDINARY_URL"):
+        cloudinary.config(
+            cloud_name=os.getenv("CLOUDINARY_CLOUD_NAME"),
+            api_key=os.getenv("CLOUDINARY_API_KEY"),
+            api_secret=os.getenv("CLOUDINARY_API_SECRET"),
+            secure=True,
+        )
+
+
+def _capture_storage_status() -> str:
+    if not _cloudinary_sdk_available():
+        return "cloudinary_sdk_missing"
+    if _cloudinary_configured():
+        return "cloudinary_configured"
+    return "cloudinary_not_configured"
 
 
 @app.after_request
@@ -75,6 +118,8 @@ def health():
             "modelBackend": os.getenv("AIRACARE_MODEL_BACKEND", "yolo_pt"),
             "inferenceImageSize": service.config.imgsz,
             "usingPretrainedFallback": service.using_pretrained_fallback,
+            "captureImageStorage": _capture_storage_status(),
+            "captureImageUploadMaxBytes": MAX_CAPTURE_UPLOAD_BYTES,
         }
     )
 
@@ -156,6 +201,103 @@ def remove_background():
         return jsonify({"ok": False, "error": str(error)}), 400
 
 
+@app.route("/api/captured-pets/upload", methods=["POST", "OPTIONS"])
+def upload_captured_pet():
+    if request.method == "OPTIONS":
+        return ("", 204)
+    logger.info("captured pet upload request received url=%s", request.url)
+    if not _cloudinary_configured():
+        logger.error("captured pet upload failed: Cloudinary is not configured")
+        return jsonify(
+            {
+                "ok": False,
+                "error": "Image storage is not configured. Add Cloudinary environment variables to the backend.",
+            }
+        ), 503
+
+    uploaded = request.files.get("image")
+    label = str(request.form.get("label") or "").lower()
+    owner_id = str(request.form.get("ownerId") or "anonymous")
+    if label not in {"dog", "cat"}:
+        return jsonify({"ok": False, "error": "Capture upload is only available for dog/cat"}), 400
+    if not uploaded:
+        return jsonify({"ok": False, "error": "Missing image file"}), 400
+    if uploaded.content_type != "image/png":
+        return jsonify({"ok": False, "error": "Captured pet image must be a PNG"}), 400
+
+    image_bytes = uploaded.read(MAX_CAPTURE_UPLOAD_BYTES + 1)
+    if not image_bytes:
+        return jsonify({"ok": False, "error": "Captured pet image is empty"}), 400
+    if len(image_bytes) > MAX_CAPTURE_UPLOAD_BYTES:
+        return jsonify({"ok": False, "error": "Captured pet image is too large"}), 413
+
+    try:
+        _configure_cloudinary()
+        import cloudinary.uploader
+
+        decoded = cv2.imdecode(np.frombuffer(image_bytes, dtype=np.uint8), cv2.IMREAD_UNCHANGED)
+        if decoded is None or decoded.size == 0:
+            return jsonify({"ok": False, "error": "Captured pet PNG could not be decoded"}), 400
+        if decoded.ndim < 3 or decoded.shape[2] != 4:
+            return jsonify({"ok": False, "error": "Captured pet PNG must preserve transparency"}), 400
+
+        safe_owner = _safe_identifier(owner_id)
+        public_id = f"{safe_owner}_{label}_{int(time.time())}_{uuid.uuid4().hex[:12]}"
+        logger.info(
+            "uploading captured pet to Cloudinary label=%s owner=%s bytes=%s public_id=%s",
+            label,
+            safe_owner,
+            len(image_bytes),
+            public_id,
+        )
+        result = cloudinary.uploader.upload(
+            BytesIO(image_bytes),
+            folder=CLOUDINARY_FOLDER,
+            public_id=public_id,
+            resource_type="image",
+            format="png",
+            overwrite=False,
+        )
+        image_url = result.get("secure_url")
+        image_public_id = result.get("public_id")
+        if not image_url or not image_public_id:
+            raise ValueError("Cloudinary did not return an image URL")
+        logger.info("captured pet upload completed public_id=%s url=%s", image_public_id, image_url)
+        return jsonify(
+            {
+                "ok": True,
+                "imageUrl": image_url,
+                "imagePublicId": image_public_id,
+                "storageProvider": "cloudinary",
+            }
+        )
+    except Exception as error:
+        logger.error("captured pet upload failed: %s\n%s", error, traceback.format_exc())
+        return jsonify({"ok": False, "error": str(error)}), 500
+
+
+@app.route("/api/captured-pets/delete", methods=["POST", "OPTIONS"])
+def delete_captured_pet_image():
+    if request.method == "OPTIONS":
+        return ("", 204)
+    if not _cloudinary_configured():
+        return jsonify({"ok": False, "error": "Image storage is not configured"}), 503
+    payload: dict[str, Any] = request.get_json(silent=True) or {}
+    image_public_id = str(payload.get("imagePublicId") or "").strip()
+    if not image_public_id:
+        return jsonify({"ok": False, "error": "Missing imagePublicId"}), 400
+    try:
+        _configure_cloudinary()
+        import cloudinary.uploader
+
+        result = cloudinary.uploader.destroy(image_public_id, resource_type="image")
+        logger.info("captured pet image delete public_id=%s result=%s", image_public_id, result)
+        return jsonify({"ok": True, "result": result})
+    except Exception as error:
+        logger.error("captured pet image delete failed: %s\n%s", error, traceback.format_exc())
+        return jsonify({"ok": False, "error": str(error)}), 500
+
+
 def _decode_data_url(image_data_url: str) -> np.ndarray:
     if "," in image_data_url:
         image_data_url = image_data_url.split(",", 1)[1]
@@ -165,6 +307,12 @@ def _decode_data_url(image_data_url: str) -> np.ndarray:
     if frame is None or frame.size == 0:
         raise ValueError("Could not decode image")
     return frame
+
+
+def _safe_identifier(value: str) -> str:
+    cleaned = "".join(character if character.isalnum() or character in {"_", "-"} else "_" for character in value)
+    cleaned = cleaned.strip("_")
+    return cleaned[:80] or "anonymous"
 
 
 def _remove_background_grabcut(frame: np.ndarray) -> tuple[str, bool, str]:

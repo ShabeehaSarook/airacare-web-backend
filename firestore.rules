@@ -1,0 +1,33 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function ownsResource() {
+      return signedIn() && resource.data.ownerId == request.auth.uid;
+    }
+
+    function ownsNewDocument() {
+      return signedIn() && request.resource.data.ownerId == request.auth.uid;
+    }
+
+    match /detections/{documentId} {
+      allow read, create: if signedIn();
+      allow update, delete: if false;
+    }
+
+    match /captured_pets/{documentId} {
+      allow create: if ownsNewDocument()
+        && request.resource.data.label in ["dog", "cat"]
+        && request.resource.data.source in ["capture_store", "web_capture_store"];
+      allow read, update, delete: if ownsResource();
+    }
+
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

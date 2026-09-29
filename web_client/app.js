@@ -13,21 +13,14 @@ import {
   onSnapshot,
   orderBy,
   query,
-  serverTimestamp
+  serverTimestamp,
+  where
 } from "https://www.gstatic.com/firebasejs/10.13.2/firebase-firestore.js";
-import {
-  deleteObject,
-  getDownloadURL,
-  getStorage,
-  ref as storageRef,
-  uploadBytes
-} from "https://www.gstatic.com/firebasejs/10.13.2/firebase-storage.js";
 
 const firebaseConfig = {
   apiKey: "AIzaSyDR_Bt2tltKxSfLSvmlW5mQ0uwxlmafy3w",
   authDomain: "airacare-animal-safety.firebaseapp.com",
   projectId: "airacare-animal-safety",
-  storageBucket: "airacare-animal-safety.firebasestorage.app",
   messagingSenderId: "934286949654",
   appId: "1:934286949654:android:a0c98c97bd4568e95ee437"
 };
@@ -35,6 +28,8 @@ const firebaseConfig = {
 const DETECTION_INTERVAL_MS = 900;
 const MAX_CAPTURE_WIDTH = 640;
 const DETECTION_TIMEOUT_MS = 30000;
+const CAMERA_OPEN_TIMEOUT_MS = 15000;
+const VIDEO_PLAY_TIMEOUT_MS = 10000;
 const PET_LABELS = new Set(["dog", "cat"]);
 const STABLE_PET_FRAMES = 2;
 const CAPTURE_COOLDOWN_MS = 2500;
@@ -45,7 +40,6 @@ const API_BASE_URL = normalizeApiBaseUrl(
 
 const firebaseApp = initializeApp(firebaseConfig);
 const db = getFirestore(firebaseApp);
-const storage = getStorage(firebaseApp);
 const auth = getAuth(firebaseApp);
 
 const video = document.getElementById("cameraVideo");
@@ -107,11 +101,21 @@ collectionTabs.forEach((tab) => {
 });
 window.addEventListener("resize", resizeOverlay);
 
-listenToRecentDetections();
-listenToCapturedPets();
-checkBackend();
-initializeAnonymousAuth();
+boot();
 console.info("[Airacare] Backend base URL:", API_BASE_URL);
+
+async function boot() {
+  checkBackend();
+  const authReady = await initializeAnonymousAuth();
+  if (!authReady) {
+    firebaseStatus.textContent = "Auth required";
+    collectionItems = [];
+    renderCollection();
+    return;
+  }
+  listenToRecentDetections();
+  listenToCapturedPets();
+}
 
 async function checkBackend() {
   const endpoint = `${API_BASE_URL}/api/health`;
@@ -135,28 +139,39 @@ async function checkBackend() {
 }
 
 async function start() {
+  let openedStream = null;
   try {
     setStatus("Opening camera");
     startButton.disabled = true;
     await startLocationWatch();
-    stream = await navigator.mediaDevices.getUserMedia({
-      video: {
-        facingMode: { ideal: "environment" },
-        width: { ideal: 1280 },
-        height: { ideal: 720 }
-      },
-      audio: false
-    });
+    openedStream = await withTimeout(
+      requestCameraStream(),
+      CAMERA_OPEN_TIMEOUT_MS,
+      "Camera permission timed out. Allow camera access and reload."
+    );
+    stream = openedStream;
     video.srcObject = stream;
-    await video.play();
+    await withTimeout(waitForVideoReady(), VIDEO_PLAY_TIMEOUT_MS, "Camera video did not become ready.");
+    await withTimeout(video.play(), VIDEO_PLAY_TIMEOUT_MS, "Camera playback failed to start.");
     resizeOverlay();
     running = true;
     stopButton.disabled = false;
     setStatus("Detecting");
     detectLoop();
   } catch (error) {
-    console.error(error);
-    setStatus(error.message || "Camera failed");
+    if (openedStream && openedStream !== stream) openedStream.getTracks().forEach((track) => track.stop());
+    if (stream) stream.getTracks().forEach((track) => track.stop());
+    stream = null;
+    video.srcObject = null;
+    const message = cameraErrorMessage(error);
+    console.error("[Airacare] Camera start failed", {
+      name: error?.name || null,
+      message: error?.message || String(error),
+      constraint: error?.constraint || null,
+      isSecureContext: window.isSecureContext,
+      hasMediaDevices: Boolean(navigator.mediaDevices?.getUserMedia)
+    });
+    setStatus(message);
     startButton.disabled = false;
     stopButton.disabled = true;
   }
@@ -521,26 +536,25 @@ async function savePendingCapture() {
   capturePreviewNote.textContent = "Saving to collection...";
   try {
     const blob = await dataUrlToBlob(pendingCapture.imageDataUrl);
-    console.info("[Airacare] Upload blob:", { size: blob.size, type: blob.type });
+    console.info("[Airacare] Backend upload blob:", { size: blob.size, type: blob.type });
     if (!blob.size || blob.type !== "image/png") {
       throw new Error("Invalid sticker image blob");
     }
-    const storagePath = `captured_pets/${anonymousId}/${pendingCapture.capturedAtEpochMillis}_${pendingCapture.label}.png`;
-    const imageReference = storageRef(storage, storagePath);
-    await uploadBytes(imageReference, blob, { contentType: "image/png" });
-    const imageUrl = await getDownloadURL(imageReference);
+    const uploadResult = await uploadCapturedPetImage(blob, pendingCapture);
     await addDoc(collection(db, "captured_pets"), {
+      ownerId: anonymousId,
       label: pendingCapture.label,
       confidence: pendingCapture.confidence,
-      imageUrl,
-      storagePath,
+      imageUrl: uploadResult.imageUrl,
+      imagePublicId: uploadResult.imagePublicId || null,
+      storageProvider: uploadResult.storageProvider || "backend",
       capturedAt: serverTimestamp(),
       capturedAtEpochMillis: pendingCapture.capturedAtEpochMillis,
       boundingBox: pendingCapture.boundingBox,
       distanceMeters: pendingCapture.distanceMeters,
       riskLevel: pendingCapture.riskLevel,
       cameraSource: pendingCapture.cameraSource,
-      source: "web_capture_store",
+      source: "capture_store",
       backgroundRemoved: pendingCapture.backgroundRemoved,
       backgroundRemovalMethod: pendingCapture.backgroundRemovalMethod,
       trackId: pendingCapture.trackId
@@ -550,11 +564,38 @@ async function savePendingCapture() {
     pendingCapture = null;
   } catch (error) {
     logFirebaseError("Save capture failed", error);
-    capturePreviewNote.textContent = firebaseUserMessage(error, "Save failed. Check Firebase Storage/Firestore rules.");
+    capturePreviewNote.textContent = firebaseUserMessage(error, "Save failed. Check backend image upload or Firestore rules.");
     saveCaptureButton.disabled = false;
   } finally {
     saveInFlight = false;
   }
+}
+
+async function uploadCapturedPetImage(blob, capture) {
+  const endpoint = `${API_BASE_URL}/api/captured-pets/upload`;
+  const formData = new FormData();
+  formData.append("image", blob, `${capture.capturedAtEpochMillis}_${capture.label}.png`);
+  formData.append("label", capture.label);
+  formData.append("ownerId", anonymousId);
+  formData.append("capturedAtEpochMillis", String(capture.capturedAtEpochMillis));
+  console.info("[Airacare] Captured pet upload endpoint:", endpoint);
+  const response = await fetch(endpoint, {
+    method: "POST",
+    body: formData
+  });
+  const text = await response.text();
+  console.info("[Airacare] Captured pet upload status:", response.status);
+  console.info("[Airacare] Captured pet upload response:", text);
+  let data = {};
+  try {
+    data = text ? JSON.parse(text) : {};
+  } catch {
+    throw new Error(text || `Image upload failed with HTTP ${response.status}`);
+  }
+  if (!response.ok || !data.ok || !data.imageUrl) {
+    throw new Error(data.error || `Image upload failed with HTTP ${response.status}`);
+  }
+  return data;
 }
 
 async function saveDetections(result) {
@@ -566,13 +607,14 @@ async function saveDetections(result) {
     try {
       await addDoc(collection(db, "detections"), {
         ...detection,
+        ownerId: anonymousId,
         source: "web_backend",
         createdAt: serverTimestamp()
       });
       firebaseStatus.textContent = "Saved";
     } catch (error) {
-      firebaseStatus.textContent = "Error";
-      console.error(error);
+      firebaseStatus.textContent = firebaseUserMessage(error, "Save error");
+      logFirebaseError("Detection save failed", error);
     }
   }
 }
@@ -600,7 +642,11 @@ function listenToRecentDetections() {
 }
 
 function listenToCapturedPets() {
-  const capturesQuery = query(collection(db, "captured_pets"), limit(24));
+  const capturesQuery = query(
+    collection(db, "captured_pets"),
+    where("ownerId", "==", anonymousId),
+    limit(24)
+  );
   onSnapshot(capturesQuery, (snapshot) => {
     collectionItems = snapshot.docs.map((captureDoc) => ({
       id: captureDoc.id,
@@ -658,14 +704,33 @@ function renderCollection() {
 async function deleteCapturedPet(item) {
   if (!item?.id) return;
   try {
-    if (item.storagePath) {
-      await deleteObject(storageRef(storage, item.storagePath));
+    if (item.imagePublicId) {
+      await deleteCapturedPetImage(item.imagePublicId);
     }
     await deleteDoc(doc(db, "captured_pets", item.id));
     captureStoreStatus.textContent = "Capture deleted.";
   } catch (error) {
     logFirebaseError("Delete capture failed", error);
     captureStoreStatus.textContent = firebaseUserMessage(error, "Delete failed.");
+  }
+}
+
+async function deleteCapturedPetImage(imagePublicId) {
+  const endpoint = `${API_BASE_URL}/api/captured-pets/delete`;
+  const response = await fetch(endpoint, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ imagePublicId })
+  });
+  const text = await response.text();
+  let data = {};
+  try {
+    data = text ? JSON.parse(text) : {};
+  } catch {
+    throw new Error(text || `Image delete failed with HTTP ${response.status}`);
+  }
+  if (!response.ok || !data.ok) {
+    throw new Error(data.error || `Image delete failed with HTTP ${response.status}`);
   }
 }
 
@@ -686,16 +751,77 @@ async function startLocationWatch() {
   );
 }
 
+async function requestCameraStream() {
+  if (!window.isSecureContext) {
+    throw new Error("Camera needs HTTPS. Open the Firebase Hosting link, not plain HTTP.");
+  }
+  if (!navigator.mediaDevices?.getUserMedia) {
+    throw new Error("This browser does not support camera access.");
+  }
+
+  const preferred = {
+    video: {
+      facingMode: { ideal: "environment" },
+      width: { ideal: 1280 },
+      height: { ideal: 720 }
+    },
+    audio: false
+  };
+
+  try {
+    return await navigator.mediaDevices.getUserMedia(preferred);
+  } catch (error) {
+    console.warn("[Airacare] Preferred camera failed, retrying default camera", {
+      name: error?.name || null,
+      message: error?.message || String(error),
+      constraint: error?.constraint || null
+    });
+    if (["NotAllowedError", "SecurityError"].includes(error?.name)) throw error;
+    return navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+  }
+}
+
+function waitForVideoReady() {
+  if (video.readyState >= HTMLMediaElement.HAVE_METADATA && video.videoWidth && video.videoHeight) {
+    return Promise.resolve();
+  }
+  return new Promise((resolve, reject) => {
+    const cleanup = () => {
+      video.removeEventListener("loadedmetadata", handleReady);
+      video.removeEventListener("canplay", handleReady);
+      video.removeEventListener("error", handleError);
+    };
+    const handleReady = () => {
+      if (video.videoWidth && video.videoHeight) {
+        cleanup();
+        resolve();
+      }
+    };
+    const handleError = () => {
+      cleanup();
+      reject(new Error("Camera video element failed to load."));
+    };
+    video.addEventListener("loadedmetadata", handleReady);
+    video.addEventListener("canplay", handleReady);
+    video.addEventListener("error", handleError);
+  });
+}
+
 async function initializeAnonymousAuth() {
   try {
     const credential = await signInAnonymously(auth);
     if (credential.user?.uid) {
       anonymousId = credential.user.uid;
       console.info("[Airacare] Firebase anonymous auth ready:", anonymousId);
+      firebaseStatus.textContent = "Ready";
+      return true;
     }
+    firebaseStatus.textContent = "Auth failed";
+    return false;
   } catch (error) {
     logFirebaseError("Anonymous auth failed", error);
-    console.warn("[Airacare] Continuing with local anonymous ID:", anonymousId);
+    firebaseStatus.textContent = firebaseUserMessage(error, "Firebase auth failed");
+    return false;
   }
 }
 
@@ -726,6 +852,34 @@ function formatFirestoreTime(timestamp) {
 
 function setStatus(message) {
   statusPill.textContent = message;
+}
+
+function withTimeout(promise, timeoutMs, timeoutMessage) {
+  return new Promise((resolve, reject) => {
+    const timeout = window.setTimeout(() => reject(new Error(timeoutMessage)), timeoutMs);
+    promise.then(
+      (value) => {
+        window.clearTimeout(timeout);
+        resolve(value);
+      },
+      (error) => {
+        window.clearTimeout(timeout);
+        reject(error);
+      }
+    );
+  });
+}
+
+function cameraErrorMessage(error) {
+  const name = String(error?.name || "");
+  const message = String(error?.message || "");
+  if (!window.isSecureContext) return "Camera needs HTTPS";
+  if (name === "NotAllowedError" || name === "SecurityError") return "Camera permission denied";
+  if (name === "NotFoundError" || name === "DevicesNotFoundError") return "No camera found";
+  if (name === "NotReadableError" || name === "TrackStartError") return "Camera is already in use";
+  if (name === "OverconstrainedError" || name === "ConstraintNotSatisfiedError") return "Requested camera is unavailable";
+  if (message) return message;
+  return "Camera failed";
 }
 
 function detectDeviceType() {
@@ -810,11 +964,15 @@ function logFirebaseError(context, error) {
 
 function firebaseUserMessage(error, fallback) {
   const code = String(error?.code || "");
+  const message = String(error?.message || "");
+  if (code.includes("auth/operation-not-allowed") || code.includes("auth/admin-restricted-operation")) {
+    return "Enable Firebase Anonymous Auth.";
+  }
+  if (code.includes("auth/") || message.includes("CONFIGURATION_NOT_FOUND")) {
+    return "Firebase authentication failed.";
+  }
   if (code.includes("permission-denied") || code.includes("unauthorized")) {
     return "Firebase rules blocked access.";
-  }
-  if (code.includes("storage/unauthenticated")) {
-    return "Firebase Storage needs sign-in.";
   }
   return fallback;
 }
