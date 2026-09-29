@@ -61,7 +61,9 @@ def _cloudinary_sdk_available() -> bool:
 def _configure_cloudinary():
     import cloudinary
 
-    if not os.getenv("CLOUDINARY_URL"):
+    if os.getenv("CLOUDINARY_URL"):
+        cloudinary.config(secure=True)
+    else:
         cloudinary.config(
             cloud_name=os.getenv("CLOUDINARY_CLOUD_NAME"),
             api_key=os.getenv("CLOUDINARY_API_KEY"),
