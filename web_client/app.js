@@ -1,5 +1,9 @@
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.13.2/firebase-app.js";
 import {
+  getAuth,
+  signInAnonymously
+} from "https://www.gstatic.com/firebasejs/10.13.2/firebase-auth.js";
+import {
   addDoc,
   collection,
   deleteDoc,
@@ -42,6 +46,7 @@ const API_BASE_URL = normalizeApiBaseUrl(
 const firebaseApp = initializeApp(firebaseConfig);
 const db = getFirestore(firebaseApp);
 const storage = getStorage(firebaseApp);
+const auth = getAuth(firebaseApp);
 
 const video = document.getElementById("cameraVideo");
 const overlay = document.getElementById("overlayCanvas");
@@ -105,6 +110,7 @@ window.addEventListener("resize", resizeOverlay);
 listenToRecentDetections();
 listenToCapturedPets();
 checkBackend();
+initializeAnonymousAuth();
 console.info("[Airacare] Backend base URL:", API_BASE_URL);
 
 async function checkBackend() {
@@ -320,12 +326,12 @@ function updateStablePetCandidate(result) {
 
 function selectPrimaryPet(detections) {
   return detections
-    .filter((detection) => PET_LABELS.has(String(detection.label || "").toLowerCase()))
+    .filter(isValidPetDetection)
     .sort((a, b) => Number(b.confidence || 0) - Number(a.confidence || 0))[0] || null;
 }
 
 function updateCaptureStoreButton() {
-  const canCapture = Boolean(stablePetCandidate && running && !captureInFlight);
+  const canCapture = Boolean(stablePetCandidate && running && !captureInFlight && hasCurrentVideoFrame());
   captureStoreButton.hidden = !stablePetCandidate;
   captureStoreButton.disabled = !canCapture;
   if (stablePetCandidate) {
@@ -338,6 +344,13 @@ function updateCaptureStoreButton() {
 
 async function captureAndStorePet() {
   if (!stablePetCandidate || !latestDetectionResult || captureInFlight) return;
+  const petDetection = { ...stablePetCandidate, boundingBox: { ...stablePetCandidate.boundingBox } };
+  const validationError = validateCaptureInputs(petDetection, latestDetectionResult);
+  if (validationError) {
+    captureStoreStatus.textContent = validationError;
+    console.warn("[Airacare] Capture blocked:", validationError, petDetection, latestDetectionResult);
+    return;
+  }
   if (Date.now() - lastCaptureAt < CAPTURE_COOLDOWN_MS) {
     captureStoreStatus.textContent = "Please wait before capturing again.";
     return;
@@ -349,14 +362,15 @@ async function captureAndStorePet() {
   captureStoreStatus.textContent = "Creating sticker...";
 
   try {
-    const cropDataUrl = cropPetFromCurrentFrame(stablePetCandidate, latestDetectionResult);
+    const cropDataUrl = cropPetFromCurrentFrame(petDetection, latestDetectionResult);
     const endpoint = `${API_BASE_URL}/api/remove-background`;
+    console.info("[Airacare] Background removal endpoint:", endpoint);
     const response = await fetch(endpoint, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         image: cropDataUrl,
-        label: stablePetCandidate.label
+        label: petDetection.label
       })
     });
     const text = await response.text();
@@ -365,20 +379,38 @@ async function captureAndStorePet() {
     if (!backgroundResult.ok || !backgroundResult.image) {
       throw new Error(backgroundResult.error || "Background removal failed");
     }
+    if (!isValidDataUrl(backgroundResult.image, "image/png")) {
+      throw new Error("Background removal returned an invalid PNG preview");
+    }
+    const previewBlob = await dataUrlToBlob(backgroundResult.image);
+    console.info("[Airacare] Sticker blob:", {
+      size: previewBlob.size,
+      type: previewBlob.type,
+      backgroundRemoved: backgroundResult.backgroundRemoved,
+      method: backgroundResult.method
+    });
+    if (!previewBlob.size || previewBlob.type !== "image/png") {
+      throw new Error("Background removal returned an empty or non-PNG image");
+    }
 
     pendingCapture = {
-      label: String(stablePetCandidate.label || "").toLowerCase(),
-      confidence: Number(stablePetCandidate.confidence || 0),
+      label: String(petDetection.label || "").toLowerCase(),
+      confidence: Number(petDetection.confidence),
       imageDataUrl: backgroundResult.image,
       backgroundRemoved: Boolean(backgroundResult.backgroundRemoved),
       backgroundRemovalMethod: backgroundResult.method || "unknown",
-      boundingBox: { ...stablePetCandidate.boundingBox },
-      distanceMeters: stablePetCandidate.distanceMeters ?? null,
-      riskLevel: stablePetCandidate.riskLevel || null,
-      cameraSource: stablePetCandidate.cameraSource || "web_camera_backend",
-      trackId: stablePetCandidate.trackId ?? null,
+      boundingBox: { ...petDetection.boundingBox },
+      distanceMeters: petDetection.distanceMeters ?? null,
+      riskLevel: petDetection.riskLevel || null,
+      cameraSource: petDetection.cameraSource || "web_camera_backend",
+      trackId: petDetection.trackId ?? null,
       capturedAtEpochMillis: Date.now()
     };
+    const captureValidationError = validatePendingCapture(pendingCapture);
+    if (captureValidationError) {
+      pendingCapture = null;
+      throw new Error(captureValidationError);
+    }
     showCapturePreview(pendingCapture);
     captureStoreStatus.textContent = backgroundResult.backgroundRemoved
       ? "Sticker ready. Review before saving."
@@ -420,6 +452,16 @@ function cropPetFromCurrentFrame(detection, result) {
 
   const cropWidth = Math.max(1, Math.round(right - left));
   const cropHeight = Math.max(1, Math.round(bottom - top));
+  console.info("[Airacare] Capture crop:", {
+    videoWidth: video.videoWidth,
+    videoHeight: video.videoHeight,
+    modelFrameWidth: frameWidth,
+    modelFrameHeight: frameHeight,
+    boundingBox: box,
+    crop: { left, top, right, bottom },
+    cropWidth,
+    cropHeight
+  });
   petCropCanvas.width = cropWidth;
   petCropCanvas.height = cropHeight;
   petCropCtx.clearRect(0, 0, cropWidth, cropHeight);
@@ -434,10 +476,19 @@ function cropPetFromCurrentFrame(detection, result) {
     cropWidth,
     cropHeight
   );
-  return petCropCanvas.toDataURL("image/jpeg", 0.88);
+  const dataUrl = petCropCanvas.toDataURL("image/jpeg", 0.88);
+  console.info("[Airacare] Crop data URL chars:", dataUrl.length);
+  return dataUrl;
 }
 
 function showCapturePreview(capture) {
+  const validationError = validatePendingCapture(capture);
+  if (validationError) {
+    console.warn("[Airacare] Preview blocked:", validationError, capture);
+    captureStoreStatus.textContent = validationError;
+    saveCaptureButton.disabled = true;
+    return;
+  }
   captureModalTitle.textContent = `Captured ${capitalize(capture.label)}`;
   capturePreviewImage.src = capture.imageDataUrl;
   capturePreviewLabel.textContent = capture.label;
@@ -446,7 +497,7 @@ function showCapturePreview(capture) {
   capturePreviewNote.textContent = capture.backgroundRemoved
     ? "Transparent sticker created."
     : "Fallback crop created because background removal was uncertain.";
-  saveCaptureButton.disabled = false;
+  saveCaptureButton.disabled = Boolean(validatePendingCapture(capture));
   captureModal.hidden = false;
 }
 
@@ -458,11 +509,22 @@ function closeCaptureModal() {
 
 async function savePendingCapture() {
   if (!pendingCapture || saveInFlight) return;
+  const validationError = validatePendingCapture(pendingCapture);
+  if (validationError) {
+    capturePreviewNote.textContent = validationError;
+    saveCaptureButton.disabled = true;
+    console.warn("[Airacare] Save blocked:", validationError, pendingCapture);
+    return;
+  }
   saveInFlight = true;
   saveCaptureButton.disabled = true;
   capturePreviewNote.textContent = "Saving to collection...";
   try {
     const blob = await dataUrlToBlob(pendingCapture.imageDataUrl);
+    console.info("[Airacare] Upload blob:", { size: blob.size, type: blob.type });
+    if (!blob.size || blob.type !== "image/png") {
+      throw new Error("Invalid sticker image blob");
+    }
     const storagePath = `captured_pets/${anonymousId}/${pendingCapture.capturedAtEpochMillis}_${pendingCapture.label}.png`;
     const imageReference = storageRef(storage, storagePath);
     await uploadBytes(imageReference, blob, { contentType: "image/png" });
@@ -487,8 +549,8 @@ async function savePendingCapture() {
     captureModal.hidden = true;
     pendingCapture = null;
   } catch (error) {
-    console.error(error);
-    capturePreviewNote.textContent = "Save failed. Check Firebase Storage rules.";
+    logFirebaseError("Save capture failed", error);
+    capturePreviewNote.textContent = firebaseUserMessage(error, "Save failed. Check Firebase Storage/Firestore rules.");
     saveCaptureButton.disabled = false;
   } finally {
     saveInFlight = false;
@@ -533,21 +595,23 @@ function listenToRecentDetections() {
     });
   }, (error) => {
     firebaseStatus.textContent = "Read error";
-    console.error(error);
+    logFirebaseError("Detections listener failed", error);
   });
 }
 
 function listenToCapturedPets() {
-  const capturesQuery = query(collection(db, "captured_pets"), orderBy("capturedAt", "desc"), limit(24));
+  const capturesQuery = query(collection(db, "captured_pets"), limit(24));
   onSnapshot(capturesQuery, (snapshot) => {
     collectionItems = snapshot.docs.map((captureDoc) => ({
       id: captureDoc.id,
       ...captureDoc.data()
-    }));
+    })).sort((a, b) => Number(b.capturedAtEpochMillis || 0) - Number(a.capturedAtEpochMillis || 0));
     renderCollection();
   }, (error) => {
-    firebaseStatus.textContent = "Collection error";
-    console.error(error);
+    firebaseStatus.textContent = firebaseUserMessage(error, "Collection error");
+    logFirebaseError("Captured pets listener failed", error);
+    collectionItems = [];
+    renderCollection();
   });
 }
 
@@ -600,8 +664,8 @@ async function deleteCapturedPet(item) {
     await deleteDoc(doc(db, "captured_pets", item.id));
     captureStoreStatus.textContent = "Capture deleted.";
   } catch (error) {
-    console.error(error);
-    captureStoreStatus.textContent = "Delete failed.";
+    logFirebaseError("Delete capture failed", error);
+    captureStoreStatus.textContent = firebaseUserMessage(error, "Delete failed.");
   }
 }
 
@@ -620,6 +684,19 @@ async function startLocationWatch() {
     () => {},
     { enableHighAccuracy: true, maximumAge: 3000, timeout: 10000 }
   );
+}
+
+async function initializeAnonymousAuth() {
+  try {
+    const credential = await signInAnonymously(auth);
+    if (credential.user?.uid) {
+      anonymousId = credential.user.uid;
+      console.info("[Airacare] Firebase anonymous auth ready:", anonymousId);
+    }
+  } catch (error) {
+    logFirebaseError("Anonymous auth failed", error);
+    console.warn("[Airacare] Continuing with local anonymous ID:", anonymousId);
+  }
 }
 
 function freshPosition() {
@@ -663,6 +740,49 @@ function normalizeApiBaseUrl(url) {
   return String(url || "").trim().replace(/\/+$/, "");
 }
 
+function isValidPetDetection(detection) {
+  const label = String(detection?.label || "").toLowerCase();
+  if (!PET_LABELS.has(label)) return false;
+  if (typeof detection.confidence !== "number" || !Number.isFinite(detection.confidence)) return false;
+  return isValidBoundingBox(detection.boundingBox);
+}
+
+function isValidBoundingBox(box) {
+  if (!box) return false;
+  const values = [box.left, box.top, box.right, box.bottom].map(Number);
+  return values.every(Number.isFinite) && values[2] > values[0] && values[3] > values[1];
+}
+
+function hasCurrentVideoFrame() {
+  return Boolean(video.videoWidth > 0 && video.videoHeight > 0 && !video.paused && !video.ended);
+}
+
+function validateCaptureInputs(detection, result) {
+  if (!running) return "Start the camera before capturing.";
+  if (!hasCurrentVideoFrame()) return "Camera frame is not ready yet.";
+  if (!result || typeof result.frameWidth !== "number" || typeof result.frameHeight !== "number") {
+    return "Detection frame data is unavailable.";
+  }
+  if (!isValidPetDetection(detection)) {
+    return "Capture is available only for a valid dog or cat detection.";
+  }
+  return "";
+}
+
+function validatePendingCapture(capture) {
+  if (!capture) return "No capture is ready.";
+  if (!PET_LABELS.has(String(capture.label || "").toLowerCase())) return "Capture label is invalid.";
+  if (typeof capture.confidence !== "number" || !Number.isFinite(capture.confidence)) return "Capture confidence is unavailable.";
+  if (!isValidBoundingBox(capture.boundingBox)) return "Capture bounding box is invalid.";
+  if (!capture.capturedAtEpochMillis) return "Capture time is unavailable.";
+  if (!isValidDataUrl(capture.imageDataUrl, "image/png")) return "Sticker image is unavailable.";
+  return "";
+}
+
+function isValidDataUrl(value, mimeType) {
+  return typeof value === "string" && value.startsWith(`data:${mimeType};base64,`) && value.length > `data:${mimeType};base64,`.length;
+}
+
 function getAnonymousId() {
   const key = "airacareAnonymousId";
   const existing = localStorage.getItem(key);
@@ -677,6 +797,26 @@ function getAnonymousId() {
 
 function dataUrlToBlob(dataUrl) {
   return fetch(dataUrl).then((response) => response.blob());
+}
+
+function logFirebaseError(context, error) {
+  console.error(`[Airacare] ${context}`, {
+    code: error?.code || null,
+    message: error?.message || String(error),
+    name: error?.name || null,
+    stack: error?.stack || null
+  });
+}
+
+function firebaseUserMessage(error, fallback) {
+  const code = String(error?.code || "");
+  if (code.includes("permission-denied") || code.includes("unauthorized")) {
+    return "Firebase rules blocked access.";
+  }
+  if (code.includes("storage/unauthenticated")) {
+    return "Firebase Storage needs sign-in.";
+  }
+  return fallback;
 }
 
 function clamp(value, min, max) {
