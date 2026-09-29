@@ -10,6 +10,7 @@ import os
 import time
 import traceback
 import uuid
+from urllib.parse import unquote, urlparse
 from typing import Any
 
 import cv2
@@ -61,8 +62,17 @@ def _cloudinary_sdk_available() -> bool:
 def _configure_cloudinary():
     import cloudinary
 
-    if os.getenv("CLOUDINARY_URL"):
-        cloudinary.config(secure=True)
+    cloudinary_url = os.getenv("CLOUDINARY_URL")
+    if cloudinary_url:
+        parsed = urlparse(cloudinary_url)
+        if parsed.scheme != "cloudinary" or not parsed.username or not parsed.password or not parsed.hostname:
+            raise ValueError("CLOUDINARY_URL is not in the expected cloudinary://API_KEY:API_SECRET@CLOUD_NAME format")
+        cloudinary.config(
+            cloud_name=parsed.hostname,
+            api_key=unquote(parsed.username),
+            api_secret=unquote(parsed.password),
+            secure=True,
+        )
     else:
         cloudinary.config(
             cloud_name=os.getenv("CLOUDINARY_CLOUD_NAME"),
