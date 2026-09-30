@@ -18,7 +18,7 @@ from flask import Flask, jsonify, request, send_from_directory
 import numpy as np
 
 from src.config import TARGET_CLASSES
-from src.web_detection_service import WebDetectionConfig, WebDetectionService
+from src.web_detection_service import WebDetectionConfig, WebDetectionService, resolve_web_model_backend
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent
@@ -127,7 +127,7 @@ def health():
             "targetClasses": loaded_classes,
             "modelPath": str(service.model_path) if service.model_path else None,
             "modelNames": service.model_names,
-            "modelBackend": os.getenv("AIRACARE_MODEL_BACKEND", "android_tflite"),
+            "modelBackend": resolve_web_model_backend(),
             "inferenceImageSize": service.config.imgsz,
             "usingPretrainedFallback": service.using_pretrained_fallback,
             "captureImageStorage": _capture_storage_status(),

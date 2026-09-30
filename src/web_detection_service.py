@@ -41,6 +41,16 @@ from src.warning import NONE, RISK_TO_WARNING, WarningCandidate, WarningManager
 logger = logging.getLogger("airacare-web-backend")
 
 
+def resolve_web_model_backend() -> str:
+    requested = os.getenv("AIRACARE_MODEL_BACKEND", "android_tflite")
+    if os.getenv("AIRACARE_FORCE_YOLO_PT") == "1":
+        return "yolo_pt"
+    if requested == "yolo_pt":
+        logger.info("AIRACARE_MODEL_BACKEND=yolo_pt ignored for web stability; using android_tflite")
+        return "android_tflite"
+    return requested
+
+
 @dataclass
 class WebDetectionConfig:
     model_mode: str = "custom"
@@ -96,7 +106,7 @@ class WebDetectionService:
         except Exception as error:
             logger.warning("could not tune torch threading: %s", error)
 
-        backend = os.getenv("AIRACARE_MODEL_BACKEND", "android_tflite")
+        backend = resolve_web_model_backend()
         model = None
         using_pretrained = False
         model_path = None
