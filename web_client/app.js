@@ -25,9 +25,9 @@ const firebaseConfig = {
   appId: "1:934286949654:android:a0c98c97bd4568e95ee437"
 };
 
-const DETECTION_INTERVAL_MS = 900;
-const MAX_CAPTURE_WIDTH = 640;
-const DETECTION_TIMEOUT_MS = 30000;
+const DETECTION_INTERVAL_MS = 2500;
+const MAX_CAPTURE_WIDTH = 320;
+const DETECTION_TIMEOUT_MS = 60000;
 const CAMERA_OPEN_TIMEOUT_MS = 15000;
 const VIDEO_PLAY_TIMEOUT_MS = 10000;
 const PET_LABELS = new Set(["dog", "cat"]);

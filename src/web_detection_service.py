@@ -45,7 +45,7 @@ logger = logging.getLogger("airacare-web-backend")
 class WebDetectionConfig:
     model_mode: str = "custom"
     confidence: float = CONFIDENCE_THRESHOLD
-    imgsz: int = int(os.getenv("AIRACARE_INFERENCE_IMAGE_SIZE", "640"))
+    imgsz: int = int(os.getenv("AIRACARE_INFERENCE_IMAGE_SIZE", "320"))
     iou: float = IOU_THRESHOLD
     device: str = "auto"
     calibration_path: str = "config/phone_calibration.json"
