@@ -127,7 +127,7 @@ def health():
             "targetClasses": loaded_classes,
             "modelPath": str(service.model_path) if service.model_path else None,
             "modelNames": service.model_names,
-            "modelBackend": os.getenv("AIRACARE_MODEL_BACKEND", "yolo_pt"),
+            "modelBackend": os.getenv("AIRACARE_MODEL_BACKEND", "android_tflite"),
             "inferenceImageSize": service.config.imgsz,
             "usingPretrainedFallback": service.using_pretrained_fallback,
             "captureImageStorage": _capture_storage_status(),

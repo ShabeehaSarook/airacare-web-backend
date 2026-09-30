@@ -96,7 +96,7 @@ class WebDetectionService:
         except Exception as error:
             logger.warning("could not tune torch threading: %s", error)
 
-        backend = os.getenv("AIRACARE_MODEL_BACKEND", "yolo_pt")
+        backend = os.getenv("AIRACARE_MODEL_BACKEND", "android_tflite")
         model = None
         using_pretrained = False
         model_path = None
