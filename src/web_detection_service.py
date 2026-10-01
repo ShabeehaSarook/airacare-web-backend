@@ -185,7 +185,7 @@ class WebDetectionService:
                     frame_quality["edgeRatio"],
                 )
                 self._reset_transient_state()
-                return self._empty_result(frame_width, frame_height, frame_quality)
+                return self._empty_result(frame_width, frame_height, frame_quality, metadata)
 
             runtime_resolution = (frame_width, frame_height)
             if self.calibration is not None and self.runtime_focal_resolution != runtime_resolution:
@@ -412,6 +412,8 @@ class WebDetectionService:
                 },
                 "detections": detections,
                 "timestamp": timestamp_ms,
+                "frameId": metadata.get("frameId"),
+                "requestFrameId": metadata.get("frameId"),
                 "frameQuality": frame_quality,
                 "confirmation": {
                     "minConsecutiveFrames": MIN_CONSECUTIVE_FRAMES,
@@ -468,7 +470,7 @@ class WebDetectionService:
         self.track_history = TrackHistory()
         self.warning_manager = WarningManager(warnings_enabled=True, audio_enabled=False)
 
-    def _empty_result(self, frame_width: int, frame_height: int, frame_quality: dict[str, Any]) -> dict[str, Any]:
+    def _empty_result(self, frame_width: int, frame_height: int, frame_quality: dict[str, Any], metadata: dict[str, Any]) -> dict[str, Any]:
         timestamp_ms = int(time.time() * 1000)
         return {
             "ok": True,
@@ -488,6 +490,8 @@ class WebDetectionService:
             },
             "detections": [],
             "timestamp": timestamp_ms,
+            "frameId": metadata.get("frameId"),
+            "requestFrameId": metadata.get("frameId"),
             "frameQuality": frame_quality,
             "confirmation": {
                 "minConsecutiveFrames": MIN_CONSECUTIVE_FRAMES,

@@ -32,7 +32,7 @@ const CAMERA_OPEN_TIMEOUT_MS = 15000;
 const VIDEO_PLAY_TIMEOUT_MS = 10000;
 const PET_LABELS = new Set(["dog", "cat"]);
 const STABLE_PET_FRAMES = 2;
-const FRONTEND_BUILD = "false-positive-guard-2026-10-01";
+const FRONTEND_BUILD = "false-positive-guard-status-2026-10-01";
 const CAPTURE_COOLDOWN_MS = 2500;
 const DETECTION_EVENT_SAVE_COOLDOWN_MS = 45000;
 const DEFAULT_API_BASE_URL = "https://airacare-web-backend.onrender.com";
@@ -195,6 +195,7 @@ function stop() {
   stablePetCandidate = null;
   petStability = { key: null, count: 0 };
   updateCaptureStoreButton();
+  firebaseStatus.textContent = "Idle";
   startButton.disabled = false;
   stopButton.disabled = true;
   setStatus("Stopped");
@@ -222,6 +223,7 @@ async function detectLoop() {
         signal: controller.signal,
         body: JSON.stringify({
           image,
+          frameId: requestSeq,
           ...freshPosition(),
           deviceType: detectDeviceType(),
           captureWidth: captureCanvas.width,
@@ -238,11 +240,12 @@ async function detectLoop() {
     console.info("[Airacare] Detection status:", response.status);
     if (!response.ok) throw new Error(text || `HTTP ${response.status}`);
     const result = JSON.parse(text);
-    if (requestSeq < latestProcessedDetectionSeq) {
-      console.info("[Airacare] Ignored stale detection response", { requestSeq, latestProcessedDetectionSeq });
+    const responseFrameId = Number(result.frameId || result.requestFrameId || requestSeq);
+    if (responseFrameId < latestProcessedDetectionSeq) {
+      console.info("[Airacare] Ignored stale detection response", { requestSeq, responseFrameId, latestProcessedDetectionSeq });
       return;
     }
-    latestProcessedDetectionSeq = requestSeq;
+    latestProcessedDetectionSeq = responseFrameId;
     console.info(
       "[Airacare] Detection result:",
       `${result.detections?.length || 0} objects`,
@@ -627,10 +630,15 @@ async function uploadCapturedPetImage(blob, capture) {
 
 async function saveDetections(result) {
   if (result.frameQuality && result.frameQuality.ok === false) {
-    firebaseStatus.textContent = "Ready";
+    firebaseStatus.textContent = "Idle";
     console.info("[Airacare] Detection save skipped: bad frame quality", result.frameQuality);
     return;
   }
+  if (!Array.isArray(result.detections) || result.detections.length === 0) {
+    firebaseStatus.textContent = "Idle";
+    return;
+  }
+  let savedAny = false;
   for (const detection of result.detections || []) {
     const validationError = detectionSaveValidationError(detection);
     if (validationError) {
@@ -653,10 +661,14 @@ async function saveDetections(result) {
         createdAt: serverTimestamp()
       });
       firebaseStatus.textContent = "Saved";
+      savedAny = true;
     } catch (error) {
       firebaseStatus.textContent = firebaseUserMessage(error, "Save error");
       logFirebaseError("Detection save failed", error);
     }
+  }
+  if (!savedAny) {
+    firebaseStatus.textContent = "Idle";
   }
 }
 
@@ -854,7 +866,7 @@ async function initializeAnonymousAuth() {
     if (credential.user?.uid) {
       anonymousId = credential.user.uid;
       console.info("[Airacare] Firebase anonymous auth ready:", anonymousId);
-      firebaseStatus.textContent = "Ready";
+      firebaseStatus.textContent = "Idle";
       return true;
     }
     firebaseStatus.textContent = "Auth failed";

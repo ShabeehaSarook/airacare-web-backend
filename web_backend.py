@@ -167,6 +167,7 @@ def detect():
                 "bearingDegrees": payload.get("bearingDegrees"),
                 "vehicleSpeedKmh": payload.get("vehicleSpeedKmh"),
                 "deviceType": payload.get("deviceType"),
+                "frameId": payload.get("frameId"),
             },
         )
         processing_time_ms = int((time.perf_counter() - started_at) * 1000)
