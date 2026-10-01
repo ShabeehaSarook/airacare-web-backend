@@ -32,6 +32,7 @@ const CAMERA_OPEN_TIMEOUT_MS = 15000;
 const VIDEO_PLAY_TIMEOUT_MS = 10000;
 const PET_LABELS = new Set(["dog", "cat"]);
 const STABLE_PET_FRAMES = 2;
+const FRONTEND_BUILD = "capture-trigger-2026-10-01";
 const CAPTURE_COOLDOWN_MS = 2500;
 const DEFAULT_API_BASE_URL = "https://airacare-web-backend.onrender.com";
 const API_BASE_URL = normalizeApiBaseUrl(
@@ -103,6 +104,7 @@ window.addEventListener("resize", resizeOverlay);
 
 boot();
 console.info("[Airacare] Backend base URL:", API_BASE_URL);
+console.info("[Airacare] Frontend build:", FRONTEND_BUILD);
 
 async function boot() {
   checkBackend();
@@ -324,11 +326,13 @@ function updateStablePetCandidate(result) {
   if (!pet) {
     stablePetCandidate = null;
     petStability = { key: null, count: 0 };
+    logCaptureEligibility(null, null, "no-valid-dog-cat");
     updateCaptureStoreButton();
     return;
   }
 
-  const key = `${pet.trackId ?? "no-track"}:${pet.label}`;
+  const normalizedLabel = normalizeLabel(pet.label);
+  const key = normalizedLabel;
   if (petStability.key === key) {
     petStability.count += 1;
   } else {
@@ -336,6 +340,7 @@ function updateStablePetCandidate(result) {
   }
 
   stablePetCandidate = petStability.count >= STABLE_PET_FRAMES ? pet : null;
+  logCaptureEligibility(pet, stablePetCandidate, "updated");
   updateCaptureStoreButton();
 }
 
@@ -346,10 +351,11 @@ function selectPrimaryPet(detections) {
 }
 
 function updateCaptureStoreButton() {
-  const canCapture = Boolean(stablePetCandidate && running && !captureInFlight && hasCurrentVideoFrame());
-  captureStoreButton.hidden = !stablePetCandidate;
+  const captureEligible = isCaptureEligible(stablePetCandidate);
+  const canCapture = Boolean(captureEligible && running && !captureInFlight && hasCurrentVideoFrame());
+  captureStoreButton.hidden = !captureEligible;
   captureStoreButton.disabled = !canCapture;
-  if (stablePetCandidate) {
+  if (captureEligible) {
     const label = String(stablePetCandidate.label || "pet").toLowerCase();
     captureStoreButton.textContent = captureInFlight ? "Creating sticker..." : `Capture & Store ${label}`;
   } else {
@@ -894,11 +900,49 @@ function normalizeApiBaseUrl(url) {
   return String(url || "").trim().replace(/\/+$/, "");
 }
 
+function normalizeLabel(value) {
+  return String(value || "").trim().toLowerCase();
+}
+
 function isValidPetDetection(detection) {
-  const label = String(detection?.label || "").toLowerCase();
+  const label = normalizeLabel(detection?.label);
   if (!PET_LABELS.has(label)) return false;
-  if (typeof detection.confidence !== "number" || !Number.isFinite(detection.confidence)) return false;
+  if (!Number.isFinite(Number(detection.confidence))) return false;
   return isValidBoundingBox(detection.boundingBox);
+}
+
+function isCaptureEligible(detection) {
+  const label = normalizeLabel(detection?.label);
+  return Boolean(
+    PET_LABELS.has(label)
+      && detection?.boundingBox
+      && Number.isFinite(Number(detection?.confidence))
+      && isValidBoundingBox(detection.boundingBox)
+  );
+}
+
+function logCaptureEligibility(currentDetection, stableDetection, reason) {
+  console.info("[Airacare] Capture eligibility", {
+    reason,
+    currentDetection: summarizeDetectionForLog(currentDetection),
+    stableDetection: summarizeDetectionForLog(stableDetection),
+    petStability: { ...petStability },
+    captureEligible: isCaptureEligible(stableDetection),
+    hasVideoFrame: hasCurrentVideoFrame()
+  });
+}
+
+function summarizeDetectionForLog(detection) {
+  if (!detection) return null;
+  return {
+    label: detection.label,
+    normalizedLabel: normalizeLabel(detection.label),
+    confidence: detection.confidence,
+    trackId: detection.trackId ?? null,
+    boundingBox: detection.boundingBox || null,
+    distanceMeters: detection.distanceMeters ?? null,
+    riskLevel: detection.riskLevel || null
+  };
 }
 
 function isValidBoundingBox(box) {
