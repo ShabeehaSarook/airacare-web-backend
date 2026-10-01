@@ -32,7 +32,7 @@ const CAMERA_OPEN_TIMEOUT_MS = 15000;
 const VIDEO_PLAY_TIMEOUT_MS = 10000;
 const PET_LABELS = new Set(["dog", "cat"]);
 const STABLE_PET_FRAMES = 2;
-const FRONTEND_BUILD = "fast-phone-detection-2026-10-01";
+const FRONTEND_BUILD = "phone-frame-640-debug-2026-10-01";
 const CAPTURE_COOLDOWN_MS = 2500;
 const DETECTION_EVENT_SAVE_COOLDOWN_MS = 45000;
 const DEFAULT_API_BASE_URL = "https://airacare-web-backend.onrender.com";
@@ -329,6 +329,7 @@ function updateLatest(result) {
       latestDistance.textContent = "N/A";
       latestRisk.textContent = "UNKNOWN";
       warningBanner.hidden = true;
+      setStatus(`${candidate.label} checking`);
       return;
     }
     latestLabel.textContent = "None";
@@ -337,6 +338,8 @@ function updateLatest(result) {
     warningBanner.hidden = true;
     if (result.frameQuality && result.frameQuality.ok === false) {
       setStatus("Camera obstructed or image quality too low");
+    } else {
+      setStatus("No confirmed detection");
     }
     return;
   }
@@ -352,6 +355,7 @@ function updateLatest(result) {
   latestLabel.textContent = primary.label;
   latestDistance.textContent = formatDistance(primary.distanceMeters);
   latestRisk.textContent = primary.riskLevel;
+  setStatus(`${primary.label} confirmed`);
 
   if (result.warning?.message) {
     warningBanner.textContent = result.warning.message;
