@@ -41,17 +41,17 @@ from src.warning import NONE, RISK_TO_WARNING, WarningCandidate, WarningManager
 logger = logging.getLogger("airacare-web-backend")
 
 CLASS_CONFIDENCE_THRESHOLDS = {
-    "person": float(os.getenv("AIRACARE_PERSON_CONFIDENCE", "0.55")),
-    "dog": float(os.getenv("AIRACARE_DOG_CONFIDENCE", "0.65")),
-    "cat": float(os.getenv("AIRACARE_CAT_CONFIDENCE", "0.80")),
-    "horse": float(os.getenv("AIRACARE_HORSE_CONFIDENCE", "0.65")),
-    "cow": float(os.getenv("AIRACARE_COW_CONFIDENCE", "0.65")),
-    "deer": float(os.getenv("AIRACARE_DEER_CONFIDENCE", "0.65")),
-    "goat": float(os.getenv("AIRACARE_GOAT_CONFIDENCE", "0.70")),
-    "elephant": float(os.getenv("AIRACARE_ELEPHANT_CONFIDENCE", "0.70")),
+    "person": float(os.getenv("AIRACARE_PERSON_CONFIDENCE", "0.40")),
+    "dog": float(os.getenv("AIRACARE_DOG_CONFIDENCE", "0.50")),
+    "cat": float(os.getenv("AIRACARE_CAT_CONFIDENCE", "0.75")),
+    "horse": float(os.getenv("AIRACARE_HORSE_CONFIDENCE", "0.55")),
+    "cow": float(os.getenv("AIRACARE_COW_CONFIDENCE", "0.55")),
+    "deer": float(os.getenv("AIRACARE_DEER_CONFIDENCE", "0.55")),
+    "goat": float(os.getenv("AIRACARE_GOAT_CONFIDENCE", "0.60")),
+    "elephant": float(os.getenv("AIRACARE_ELEPHANT_CONFIDENCE", "0.60")),
 }
-DEFAULT_CLASS_CONFIDENCE = float(os.getenv("AIRACARE_DEFAULT_CONFIDENCE", "0.65"))
-MIN_CONSECUTIVE_FRAMES = int(os.getenv("AIRACARE_MIN_CONFIRMATION_FRAMES", "3"))
+DEFAULT_CLASS_CONFIDENCE = float(os.getenv("AIRACARE_DEFAULT_CONFIDENCE", "0.55"))
+MIN_CONSECUTIVE_FRAMES = int(os.getenv("AIRACARE_MIN_CONFIRMATION_FRAMES", "2"))
 MIN_BOX_AREA_RATIO = float(os.getenv("AIRACARE_MIN_BOX_AREA_RATIO", "0.0025"))
 MAX_BOX_AREA_RATIO = float(os.getenv("AIRACARE_MAX_BOX_AREA_RATIO", "0.85"))
 MAX_OUTSIDE_RATIO = float(os.getenv("AIRACARE_MAX_BOX_OUTSIDE_RATIO", "0.10"))

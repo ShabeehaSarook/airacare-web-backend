@@ -38,9 +38,9 @@ class AiracareCoreTests(unittest.TestCase):
         self.assertEqual(labels[:7], ["person", "dog", "cat", "horse", "cow", "deer", "goat"])
 
     def test_web_class_specific_thresholds(self):
-        self.assertGreaterEqual(_confidence_threshold_for_class("cat"), 0.80)
-        self.assertGreaterEqual(_confidence_threshold_for_class("dog"), 0.65)
-        self.assertGreaterEqual(_confidence_threshold_for_class("goat"), 0.70)
+        self.assertGreaterEqual(_confidence_threshold_for_class("cat"), 0.75)
+        self.assertGreaterEqual(_confidence_threshold_for_class("dog"), 0.50)
+        self.assertGreaterEqual(_confidence_threshold_for_class("goat"), 0.60)
 
     def test_frame_quality_rejects_covered_camera(self):
         covered = np.zeros((160, 160, 3), dtype=np.uint8)
@@ -62,7 +62,7 @@ class AiracareCoreTests(unittest.TestCase):
         self.assertTrue(valid["ok"])
 
     def test_web_temporal_confirmation_default(self):
-        self.assertGreaterEqual(MIN_CONSECUTIVE_FRAMES, 3)
+        self.assertGreaterEqual(MIN_CONSECUTIVE_FRAMES, 2)
 
     def test_camera_source_url_handling(self):
         self.assertEqual(sanitize_camera_source("0"), 0)
