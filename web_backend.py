@@ -341,32 +341,109 @@ def _remove_background_grabcut(frame: np.ndarray) -> tuple[str, bool, str]:
         process_height = max(8, int(round(height * scale)))
         process_frame = cv2.resize(frame, (process_width, process_height), interpolation=cv2.INTER_AREA)
 
-    border_x = max(2, int(process_width * 0.06))
-    border_y = max(2, int(process_height * 0.06))
-    rect = (
-        border_x,
-        border_y,
-        max(1, process_width - border_x * 2),
-        max(1, process_height - border_y * 2),
-    )
-    mask = np.zeros((process_height, process_width), dtype=np.uint8)
+    rect, mask = _build_grabcut_trimap(process_width, process_height)
     bgd_model = np.zeros((1, 65), dtype=np.float64)
     fgd_model = np.zeros((1, 65), dtype=np.float64)
-    cv2.grabCut(process_frame, mask, rect, bgd_model, fgd_model, 3, cv2.GC_INIT_WITH_RECT)
+    cv2.grabCut(process_frame, mask, rect, bgd_model, fgd_model, 2, cv2.GC_INIT_WITH_MASK)
     foreground_mask = np.where((mask == cv2.GC_FGD) | (mask == cv2.GC_PR_FGD), 255, 0).astype(np.uint8)
+    foreground_mask = _refine_foreground_mask(foreground_mask)
 
     foreground_ratio = float(np.count_nonzero(foreground_mask)) / float(max(1, process_width * process_height))
     if foreground_ratio < 0.04 or foreground_ratio > 0.96:
         return _encode_png_with_alpha(frame, np.full((height, width), 255, dtype=np.uint8)), False, "fallback_grabcut_uncertain"
 
-    kernel_size = max(3, int(round(min(process_width, process_height) * 0.025)) | 1)
-    kernel = np.ones((kernel_size, kernel_size), dtype=np.uint8)
-    foreground_mask = cv2.morphologyEx(foreground_mask, cv2.MORPH_CLOSE, kernel, iterations=1)
-    foreground_mask = cv2.morphologyEx(foreground_mask, cv2.MORPH_OPEN, kernel, iterations=1)
-    foreground_mask = cv2.GaussianBlur(foreground_mask, (5, 5), 0)
     if foreground_mask.shape[:2] != (height, width):
         foreground_mask = cv2.resize(foreground_mask, (width, height), interpolation=cv2.INTER_LINEAR)
-    return _encode_png_with_alpha(frame, foreground_mask), True, "opencv_grabcut"
+    foreground_mask = cv2.GaussianBlur(foreground_mask, (5, 5), 0)
+    return _encode_png_with_alpha(frame, foreground_mask), True, "opencv_grabcut_trimap_components"
+
+
+def _build_grabcut_trimap(width: int, height: int) -> tuple[tuple[int, int, int, int], np.ndarray]:
+    border_x = max(2, int(width * 0.08))
+    border_y = max(2, int(height * 0.08))
+    rect = (
+        border_x,
+        border_y,
+        max(1, width - border_x * 2),
+        max(1, height - border_y * 2),
+    )
+    mask = np.full((height, width), cv2.GC_PR_BGD, dtype=np.uint8)
+    mask[:border_y, :] = cv2.GC_BGD
+    mask[-border_y:, :] = cv2.GC_BGD
+    mask[:, :border_x] = cv2.GC_BGD
+    mask[:, -border_x:] = cv2.GC_BGD
+
+    core_x1 = int(width * 0.18)
+    core_x2 = int(width * 0.82)
+    core_y1 = int(height * 0.12)
+    core_y2 = int(height * 0.88)
+    mask[core_y1:core_y2, core_x1:core_x2] = cv2.GC_PR_FGD
+
+    ellipse_mask = np.zeros((height, width), dtype=np.uint8)
+    cv2.ellipse(
+        ellipse_mask,
+        (width // 2, height // 2),
+        (max(1, int(width * 0.34)), max(1, int(height * 0.42))),
+        0,
+        0,
+        360,
+        255,
+        -1,
+    )
+    mask[ellipse_mask == 255] = cv2.GC_PR_FGD
+    inner_x1 = int(width * 0.30)
+    inner_x2 = int(width * 0.70)
+    inner_y1 = int(height * 0.22)
+    inner_y2 = int(height * 0.78)
+    mask[inner_y1:inner_y2, inner_x1:inner_x2] = cv2.GC_FGD
+    return rect, mask
+
+
+def _refine_foreground_mask(mask: np.ndarray) -> np.ndarray:
+    height, width = mask.shape[:2]
+    small_kernel_size = max(3, int(round(min(width, height) * 0.012)) | 1)
+    large_kernel_size = max(3, int(round(min(width, height) * 0.025)) | 1)
+    small_kernel = np.ones((small_kernel_size, small_kernel_size), dtype=np.uint8)
+    large_kernel = np.ones((large_kernel_size, large_kernel_size), dtype=np.uint8)
+
+    cleaned = cv2.morphologyEx(mask, cv2.MORPH_OPEN, small_kernel, iterations=1)
+    cleaned = cv2.morphologyEx(cleaned, cv2.MORPH_CLOSE, large_kernel, iterations=1)
+    cleaned = _keep_foreground_components(cleaned)
+    cleaned = cv2.morphologyEx(cleaned, cv2.MORPH_CLOSE, small_kernel, iterations=1)
+    return cleaned
+
+
+def _keep_foreground_components(mask: np.ndarray) -> np.ndarray:
+    height, width = mask.shape[:2]
+    component_count, labels, stats, centroids = cv2.connectedComponentsWithStats(mask, connectivity=8)
+    if component_count <= 1:
+        return mask
+
+    min_area = max(12, int(width * height * 0.006))
+    center_x1 = width * 0.18
+    center_x2 = width * 0.82
+    center_y1 = height * 0.10
+    center_y2 = height * 0.92
+    keep = np.zeros(component_count, dtype=bool)
+    candidates: list[tuple[int, int]] = []
+    for component_id in range(1, component_count):
+        area = int(stats[component_id, cv2.CC_STAT_AREA])
+        if area < min_area:
+            continue
+        cx, cy = centroids[component_id]
+        touches_center = center_x1 <= cx <= center_x2 and center_y1 <= cy <= center_y2
+        if touches_center:
+            keep[component_id] = True
+            candidates.append((area, component_id))
+
+    if not candidates:
+        largest_id = 1 + int(np.argmax(stats[1:, cv2.CC_STAT_AREA]))
+        keep[largest_id] = True
+    elif len(candidates) > 3:
+        for _, component_id in sorted(candidates, reverse=True)[3:]:
+            keep[component_id] = False
+
+    return np.where(keep[labels], 255, 0).astype(np.uint8)
 
 
 def _encode_png_with_alpha(frame: np.ndarray, alpha: np.ndarray) -> str:
