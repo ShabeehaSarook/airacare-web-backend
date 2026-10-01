@@ -276,7 +276,7 @@ class WebDetectionService:
 
                 bbox = bbox_validation["bbox"]
                 x1, y1, x2, y2 = bbox
-                track = self._assign_track(class_name, bbox, confidence, now)
+                track = self._assign_track(class_name, bbox, confidence, now, frame_width, frame_height)
                 track_id = track.track_id
                 if track.consecutive_frames < MIN_CONSECUTIVE_FRAMES:
                     logger.info(
@@ -424,17 +424,27 @@ class WebDetectionService:
                 "runtimeFocalLengthPixels": self.runtime_focal_length,
             }
 
-    def _assign_track(self, class_name: str, bbox: tuple[float, float, float, float], confidence: float, now: float) -> _TrackMemory:
+    def _assign_track(
+        self,
+        class_name: str,
+        bbox: tuple[float, float, float, float],
+        confidence: float,
+        now: float,
+        frame_width: int,
+        frame_height: int,
+    ) -> _TrackMemory:
         best_track = None
-        best_overlap = 0.0
+        best_score = 0.0
         for track in self.web_tracks:
             if track.class_name != class_name:
                 continue
             overlap = _iou(track.bbox, bbox)
-            if overlap > best_overlap:
+            compatibility = _track_compatibility(track.bbox, bbox, frame_width, frame_height)
+            score = max(overlap, compatibility)
+            if score > best_score:
                 best_track = track
-                best_overlap = overlap
-        if best_track is not None and best_overlap >= 0.20:
+                best_score = score
+        if best_track is not None and best_score >= 0.20:
             best_track.bbox = bbox
             best_track.last_seen = now
             best_track.consecutive_frames += 1
@@ -625,6 +635,30 @@ def _iou(a: tuple[float, float, float, float], b: tuple[float, float, float, flo
     area_b = max(0.0, b[2] - b[0]) * max(0.0, b[3] - b[1])
     union = area_a + area_b - intersection
     return intersection / union if union > 0 else 0.0
+
+
+def _track_compatibility(
+    previous: tuple[float, float, float, float],
+    current: tuple[float, float, float, float],
+    frame_width: int,
+    frame_height: int,
+) -> float:
+    prev_cx = (previous[0] + previous[2]) / 2.0
+    prev_cy = (previous[1] + previous[3]) / 2.0
+    curr_cx = (current[0] + current[2]) / 2.0
+    curr_cy = (current[1] + current[3]) / 2.0
+    diagonal = max(1.0, float((frame_width ** 2 + frame_height ** 2) ** 0.5))
+    center_distance_ratio = (((prev_cx - curr_cx) ** 2 + (prev_cy - curr_cy) ** 2) ** 0.5) / diagonal
+    if center_distance_ratio > 0.35:
+        return 0.0
+
+    previous_area = max(1.0, (previous[2] - previous[0]) * (previous[3] - previous[1]))
+    current_area = max(1.0, (current[2] - current[0]) * (current[3] - current[1]))
+    area_ratio = current_area / previous_area
+    if area_ratio < 0.20 or area_ratio > 5.0:
+        return 0.0
+
+    return max(0.0, 0.35 - center_distance_ratio) / 0.35
 
 
 def _box_tuple(detected_box: Any) -> tuple[float, float, float, float]:
