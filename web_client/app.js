@@ -25,14 +25,14 @@ const firebaseConfig = {
   appId: "1:934286949654:android:a0c98c97bd4568e95ee437"
 };
 
-const DETECTION_INTERVAL_MS = 600;
+const DETECTION_INTERVAL_MS = 50;
 const MAX_CAPTURE_WIDTH = 320;
 const DETECTION_TIMEOUT_MS = 60000;
 const CAMERA_OPEN_TIMEOUT_MS = 15000;
 const VIDEO_PLAY_TIMEOUT_MS = 10000;
 const PET_LABELS = new Set(["dog", "cat"]);
 const STABLE_PET_FRAMES = 2;
-const FRONTEND_BUILD = "fast-candidate-display-2026-10-01";
+const FRONTEND_BUILD = "fast-phone-detection-2026-10-01";
 const CAPTURE_COOLDOWN_MS = 2500;
 const DETECTION_EVENT_SAVE_COOLDOWN_MS = 45000;
 const DEFAULT_API_BASE_URL = "https://airacare-web-backend.onrender.com";
