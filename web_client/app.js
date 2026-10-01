@@ -32,7 +32,7 @@ const CAMERA_OPEN_TIMEOUT_MS = 15000;
 const VIDEO_PLAY_TIMEOUT_MS = 10000;
 const PET_LABELS = new Set(["dog", "cat"]);
 const STABLE_PET_FRAMES = 2;
-const FRONTEND_BUILD = "false-positive-guard-status-2026-10-01";
+const FRONTEND_BUILD = "fast-candidate-display-2026-10-01";
 const CAPTURE_COOLDOWN_MS = 2500;
 const DETECTION_EVENT_SAVE_COOLDOWN_MS = 45000;
 const DEFAULT_API_BASE_URL = "https://airacare-web-backend.onrender.com";
@@ -248,7 +248,8 @@ async function detectLoop() {
     latestProcessedDetectionSeq = responseFrameId;
     console.info(
       "[Airacare] Detection result:",
-      `${result.detections?.length || 0} objects`,
+      `${result.detections?.length || 0} confirmed`,
+      `${result.candidateDetections?.length || 0} candidates`,
       `${result.processingTimeMs || "?"}ms`,
       result.frameQuality || null
     );
@@ -288,23 +289,30 @@ function drawDetections(result) {
   const scaleX = overlay.width / Math.max(1, result.frameWidth);
   const scaleY = overlay.height / Math.max(1, result.frameHeight);
 
-  for (const detection of result.detections || []) {
-    if (!isConfirmedDetection(detection)) continue;
+  const visibleDetections = [
+    ...(result.detections || []).filter(isConfirmedDetection),
+    ...(result.candidateDetections || []).filter(isCandidateDetection)
+  ];
+  for (const detection of visibleDetections) {
     const box = detection.boundingBox;
     const x = box.left * scaleX;
     const y = box.top * scaleY;
     const width = (box.right - box.left) * scaleX;
     const height = (box.bottom - box.top) * scaleY;
     const isWarning = detection.warningTriggered;
-    overlayCtx.strokeStyle = isWarning ? "#ff4d5d" : "#35c88a";
+    const isCandidate = detection.confirmed !== true;
+    overlayCtx.strokeStyle = isWarning ? "#ff4d5d" : isCandidate ? "#f5c542" : "#35c88a";
     overlayCtx.lineWidth = 3;
+    overlayCtx.setLineDash(isCandidate ? [8, 6] : []);
     overlayCtx.strokeRect(x, y, width, height);
+    overlayCtx.setLineDash([]);
 
-    const label = `${detection.label.toUpperCase()} ${(detection.confidence * 100).toFixed(0)}% ${formatDistance(detection.distanceMeters)}`;
+    const suffix = isCandidate ? " checking" : ` ${formatDistance(detection.distanceMeters)}`;
+    const label = `${detection.label.toUpperCase()} ${(detection.confidence * 100).toFixed(0)}%${suffix}`;
     overlayCtx.font = "16px Arial";
     const textWidth = overlayCtx.measureText(label).width + 12;
     const textY = Math.max(24, y);
-    overlayCtx.fillStyle = isWarning ? "#ff4d5d" : "#35c88a";
+    overlayCtx.fillStyle = isWarning ? "#ff4d5d" : isCandidate ? "#f5c542" : "#35c88a";
     overlayCtx.fillRect(x, textY - 22, textWidth, 22);
     overlayCtx.fillStyle = "#061014";
     overlayCtx.fillText(label, x + 6, textY - 6);
@@ -314,6 +322,15 @@ function drawDetections(result) {
 function updateLatest(result) {
   const detections = result.detections || [];
   if (detections.length === 0) {
+    const candidate = (result.candidateDetections || []).filter(isCandidateDetection)
+      .sort((a, b) => Number(b.confidence || 0) - Number(a.confidence || 0))[0] || null;
+    if (candidate) {
+      latestLabel.textContent = `${candidate.label} checking`;
+      latestDistance.textContent = "N/A";
+      latestRisk.textContent = "UNKNOWN";
+      warningBanner.hidden = true;
+      return;
+    }
     latestLabel.textContent = "None";
     latestDistance.textContent = "N/A";
     latestRisk.textContent = "UNKNOWN";
@@ -962,6 +979,16 @@ function isConfirmedDetection(detection) {
   return Boolean(
     detection
       && detection.confirmed === true
+      && normalizeLabel(detection.label)
+      && Number.isFinite(Number(detection.confidence))
+      && isValidBoundingBox(detection.boundingBox)
+  );
+}
+
+function isCandidateDetection(detection) {
+  return Boolean(
+    detection
+      && detection.confirmed !== true
       && normalizeLabel(detection.label)
       && Number.isFinite(Number(detection.confidence))
       && isValidBoundingBox(detection.boundingBox)

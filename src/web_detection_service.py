@@ -214,6 +214,7 @@ class WebDetectionService:
             boxes = getattr(result, "boxes", []) if result is not None else []
             logger.info("raw model boxes count=%s modelPath=%s", len(boxes), self.model_path)
             detections: list[dict[str, Any]] = []
+            candidate_detections: list[dict[str, Any]] = []
             risks: list[RiskResult] = []
             warning_candidates: list[WarningCandidate] = []
 
@@ -279,6 +280,21 @@ class WebDetectionService:
                 track = self._assign_track(class_name, bbox, confidence, now, frame_width, frame_height)
                 track_id = track.track_id
                 if track.consecutive_frames < MIN_CONSECUTIVE_FRAMES:
+                    candidate_detections.append(
+                        {
+                            "trackId": track_id,
+                            "label": class_name,
+                            "classId": class_id,
+                            "confidence": confidence,
+                            "confidenceThreshold": threshold,
+                            "confirmed": False,
+                            "consecutiveFrames": track.consecutive_frames,
+                            "requiredConsecutiveFrames": MIN_CONSECUTIVE_FRAMES,
+                            "validationStatus": "waiting_for_temporal_confirmation",
+                            "boundingBox": {"left": x1, "top": y1, "right": x2, "bottom": y2},
+                            "bboxAreaRatio": bbox_validation["areaRatio"],
+                        }
+                    )
                     logger.info(
                         "detection pending confirmation frameClass=%s confidence=%.4f threshold=%.4f trackId=%s consecutiveFrames=%s/%s bboxAreaRatio=%.5f frameQuality=%s",
                         class_name,
@@ -411,6 +427,7 @@ class WebDetectionService:
                     "ttcSeconds": warning_state.ttc_seconds,
                 },
                 "detections": detections,
+                "candidateDetections": candidate_detections,
                 "timestamp": timestamp_ms,
                 "frameId": metadata.get("frameId"),
                 "requestFrameId": metadata.get("frameId"),
@@ -499,6 +516,7 @@ class WebDetectionService:
                 "ttcSeconds": None,
             },
             "detections": [],
+            "candidateDetections": [],
             "timestamp": timestamp_ms,
             "frameId": metadata.get("frameId"),
             "requestFrameId": metadata.get("frameId"),
