@@ -32,7 +32,7 @@ const CAMERA_OPEN_TIMEOUT_MS = 15000;
 const VIDEO_PLAY_TIMEOUT_MS = 10000;
 const PET_LABELS = new Set(["dog", "cat"]);
 const STABLE_PET_FRAMES = 2;
-const FRONTEND_BUILD = "phone-frame-640-debug-2026-10-01";
+const FRONTEND_BUILD = "phone-runtime-debug-2026-10-01";
 const CAPTURE_COOLDOWN_MS = 2500;
 const DETECTION_EVENT_SAVE_COOLDOWN_MS = 45000;
 const DEFAULT_API_BASE_URL = "https://airacare-web-backend.onrender.com";
@@ -54,6 +54,7 @@ const petCropCtx = petCropCanvas.getContext("2d", { willReadFrequently: true });
 const startButton = document.getElementById("startButton");
 const stopButton = document.getElementById("stopButton");
 const captureStoreButton = document.getElementById("captureStoreButton");
+const runtimeDebug = document.getElementById("runtimeDebug");
 const captureStoreStatus = document.getElementById("captureStoreStatus");
 const statusPill = document.getElementById("statusPill");
 const warningBanner = document.getElementById("warningBanner");
@@ -256,6 +257,7 @@ async function detectLoop() {
     consecutiveDetectionErrors = 0;
     setStatus("Detecting");
     latestDetectionResult = result;
+    updateRuntimeDebug(result);
     drawDetections(result);
     updateLatest(result);
     updateStablePetCandidate(result);
@@ -267,6 +269,7 @@ async function detectLoop() {
     consecutiveDetectionErrors += 1;
     console.error(error);
     setStatus(consecutiveDetectionErrors >= 3 ? "Backend busy" : "Retrying");
+    runtimeDebug.textContent = `Error: ${error?.name || "fetch"} ${error?.message || error}`;
   } finally {
     detectionInFlight = false;
     loopTimer = window.setTimeout(detectLoop, DETECTION_INTERVAL_MS);
@@ -281,6 +284,16 @@ function captureFrame() {
   captureCanvas.height = Math.round(sourceHeight * scale);
   captureCtx.drawImage(video, 0, 0, captureCanvas.width, captureCanvas.height);
   return captureCanvas.toDataURL("image/jpeg", 0.9);
+}
+
+function updateRuntimeDebug(result) {
+  const confirmed = result.detections?.length || 0;
+  const candidates = result.candidateDetections?.length || 0;
+  const quality = result.frameQuality?.reason || "UNKNOWN";
+  const qualityOk = result.frameQuality?.ok === false ? "bad" : "ok";
+  const backendMs = result.processingTimeMs || "?";
+  const frame = `${captureCanvas.width}x${captureCanvas.height}`;
+  runtimeDebug.textContent = `Backend ${backendMs}ms | frame ${frame} | quality ${quality}/${qualityOk} | confirmed ${confirmed} | checking ${candidates}`;
 }
 
 function drawDetections(result) {
