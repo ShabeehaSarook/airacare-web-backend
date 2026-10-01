@@ -26,7 +26,7 @@ const firebaseConfig = {
 };
 
 const DETECTION_INTERVAL_MS = 50;
-const MAX_CAPTURE_WIDTH = 320;
+const MAX_CAPTURE_WIDTH = 640;
 const DETECTION_TIMEOUT_MS = 60000;
 const CAMERA_OPEN_TIMEOUT_MS = 15000;
 const VIDEO_PLAY_TIMEOUT_MS = 10000;
@@ -280,7 +280,7 @@ function captureFrame() {
   captureCanvas.width = Math.round(sourceWidth * scale);
   captureCanvas.height = Math.round(sourceHeight * scale);
   captureCtx.drawImage(video, 0, 0, captureCanvas.width, captureCanvas.height);
-  return captureCanvas.toDataURL("image/jpeg", 0.72);
+  return captureCanvas.toDataURL("image/jpeg", 0.9);
 }
 
 function drawDetections(result) {
