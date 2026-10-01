@@ -32,8 +32,9 @@ const CAMERA_OPEN_TIMEOUT_MS = 15000;
 const VIDEO_PLAY_TIMEOUT_MS = 10000;
 const PET_LABELS = new Set(["dog", "cat"]);
 const STABLE_PET_FRAMES = 2;
-const FRONTEND_BUILD = "capture-trigger-2026-10-01";
+const FRONTEND_BUILD = "false-positive-guard-2026-10-01";
 const CAPTURE_COOLDOWN_MS = 2500;
+const DETECTION_EVENT_SAVE_COOLDOWN_MS = 45000;
 const DEFAULT_API_BASE_URL = "https://airacare-web-backend.onrender.com";
 const API_BASE_URL = normalizeApiBaseUrl(
   new URLSearchParams(window.location.search).get("api") || DEFAULT_API_BASE_URL
@@ -84,6 +85,8 @@ let detectionInFlight = false;
 let latestDetectionResult = null;
 let stablePetCandidate = null;
 let petStability = { key: null, count: 0 };
+let detectionRequestSeq = 0;
+let latestProcessedDetectionSeq = 0;
 let captureInFlight = false;
 let saveInFlight = false;
 let lastCaptureAt = 0;
@@ -210,6 +213,7 @@ async function detectLoop() {
     const controller = new AbortController();
     const timeout = window.setTimeout(() => controller.abort(), DETECTION_TIMEOUT_MS);
     console.info("[Airacare] Detection endpoint:", endpoint);
+    const requestSeq = ++detectionRequestSeq;
     const response = await fetch(
       endpoint,
       {
@@ -234,10 +238,16 @@ async function detectLoop() {
     console.info("[Airacare] Detection status:", response.status);
     if (!response.ok) throw new Error(text || `HTTP ${response.status}`);
     const result = JSON.parse(text);
+    if (requestSeq < latestProcessedDetectionSeq) {
+      console.info("[Airacare] Ignored stale detection response", { requestSeq, latestProcessedDetectionSeq });
+      return;
+    }
+    latestProcessedDetectionSeq = requestSeq;
     console.info(
       "[Airacare] Detection result:",
       `${result.detections?.length || 0} objects`,
-      `${result.processingTimeMs || "?"}ms`
+      `${result.processingTimeMs || "?"}ms`,
+      result.frameQuality || null
     );
     consecutiveDetectionErrors = 0;
     setStatus("Detecting");
@@ -276,6 +286,7 @@ function drawDetections(result) {
   const scaleY = overlay.height / Math.max(1, result.frameHeight);
 
   for (const detection of result.detections || []) {
+    if (!isConfirmedDetection(detection)) continue;
     const box = detection.boundingBox;
     const x = box.left * scaleX;
     const y = box.top * scaleY;
@@ -302,12 +313,22 @@ function updateLatest(result) {
   if (detections.length === 0) {
     latestLabel.textContent = "None";
     latestDistance.textContent = "N/A";
-    latestRisk.textContent = result.sceneRisk || "N/A";
+    latestRisk.textContent = "UNKNOWN";
     warningBanner.hidden = true;
+    if (result.frameQuality && result.frameQuality.ok === false) {
+      setStatus("Camera obstructed or image quality too low");
+    }
     return;
   }
 
-  const primary = detections[0];
+  const primary = detections.find(isConfirmedDetection) || null;
+  if (!primary) {
+    latestLabel.textContent = "None";
+    latestDistance.textContent = "N/A";
+    latestRisk.textContent = "UNKNOWN";
+    warningBanner.hidden = true;
+    return;
+  }
   latestLabel.textContent = primary.label;
   latestDistance.textContent = formatDistance(primary.distanceMeters);
   latestRisk.textContent = primary.riskLevel;
@@ -346,7 +367,7 @@ function updateStablePetCandidate(result) {
 
 function selectPrimaryPet(detections) {
   return detections
-    .filter(isValidPetDetection)
+    .filter((detection) => isConfirmedDetection(detection) && isValidPetDetection(detection))
     .sort((a, b) => Number(b.confidence || 0) - Number(a.confidence || 0))[0] || null;
 }
 
@@ -605,11 +626,25 @@ async function uploadCapturedPetImage(blob, capture) {
 }
 
 async function saveDetections(result) {
+  if (result.frameQuality && result.frameQuality.ok === false) {
+    firebaseStatus.textContent = "Ready";
+    console.info("[Airacare] Detection save skipped: bad frame quality", result.frameQuality);
+    return;
+  }
   for (const detection of result.detections || []) {
-    if (!detection.warningTriggered && detection.confidence < 0.45) continue;
-    const signature = `${detection.trackId}:${detection.label}:${Math.round(result.timestamp / 3000)}`;
-    if (lastSavedBySignature.has(signature)) continue;
+    const validationError = detectionSaveValidationError(detection);
+    if (validationError) {
+      console.info("[Airacare] Detection save skipped:", validationError, summarizeDetectionForLog(detection));
+      continue;
+    }
+    const signature = `${detection.trackId ?? "no_track"}:${normalizeLabel(detection.label)}`;
+    const previousSaveAt = lastSavedBySignature.get(signature) || 0;
+    if (Date.now() - previousSaveAt < DETECTION_EVENT_SAVE_COOLDOWN_MS) {
+      console.info("[Airacare] Detection save skipped: duplicate active track", signature);
+      continue;
+    }
     lastSavedBySignature.set(signature, Date.now());
+    cleanupSavedSignatures();
     try {
       await addDoc(collection(db, "detections"), {
         ...detection,
@@ -911,6 +946,29 @@ function isValidPetDetection(detection) {
   return isValidBoundingBox(detection.boundingBox);
 }
 
+function isConfirmedDetection(detection) {
+  return Boolean(
+    detection
+      && detection.confirmed === true
+      && normalizeLabel(detection.label)
+      && Number.isFinite(Number(detection.confidence))
+      && isValidBoundingBox(detection.boundingBox)
+  );
+}
+
+function detectionSaveValidationError(detection) {
+  if (!detection) return "missing detection";
+  if (detection.confirmed !== true) return "not confirmed";
+  const label = normalizeLabel(detection.label);
+  if (!label || label === "none") return "empty label";
+  if (!Number.isFinite(Number(detection.confidence))) return "invalid confidence";
+  if (!isValidBoundingBox(detection.boundingBox)) return "invalid bounding box";
+  if (typeof detection.distanceMeters !== "number" || !Number.isFinite(detection.distanceMeters)) return "distance unavailable";
+  if (!detection.riskLevel || detection.riskLevel === "UNKNOWN") return "risk unavailable";
+  if (detection.consecutiveFrames && Number(detection.consecutiveFrames) < 3) return "insufficient consecutive frames";
+  return "";
+}
+
 function isCaptureEligible(detection) {
   const label = normalizeLabel(detection?.label);
   return Boolean(
@@ -949,6 +1007,15 @@ function isValidBoundingBox(box) {
   if (!box) return false;
   const values = [box.left, box.top, box.right, box.bottom].map(Number);
   return values.every(Number.isFinite) && values[2] > values[0] && values[3] > values[1];
+}
+
+function cleanupSavedSignatures() {
+  const now = Date.now();
+  for (const [signature, savedAt] of lastSavedBySignature.entries()) {
+    if (now - savedAt > DETECTION_EVENT_SAVE_COOLDOWN_MS * 2) {
+      lastSavedBySignature.delete(signature);
+    }
+  }
 }
 
 function hasCurrentVideoFrame() {

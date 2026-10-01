@@ -18,7 +18,13 @@ from flask import Flask, jsonify, request, send_from_directory
 import numpy as np
 
 from src.config import TARGET_CLASSES
-from src.web_detection_service import WebDetectionConfig, WebDetectionService, resolve_web_model_backend
+from src.web_detection_service import (
+    CLASS_CONFIDENCE_THRESHOLDS,
+    MIN_CONSECUTIVE_FRAMES,
+    WebDetectionConfig,
+    WebDetectionService,
+    resolve_web_model_backend,
+)
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent
@@ -132,6 +138,8 @@ def health():
             "usingPretrainedFallback": service.using_pretrained_fallback,
             "captureImageStorage": _capture_storage_status(),
             "captureImageUploadMaxBytes": MAX_CAPTURE_UPLOAD_BYTES,
+            "minConfirmationFrames": MIN_CONSECUTIVE_FRAMES,
+            "classConfidenceThresholds": CLASS_CONFIDENCE_THRESHOLDS,
         }
     )
 

@@ -40,6 +40,29 @@ from src.warning import NONE, RISK_TO_WARNING, WarningCandidate, WarningManager
 
 logger = logging.getLogger("airacare-web-backend")
 
+CLASS_CONFIDENCE_THRESHOLDS = {
+    "person": float(os.getenv("AIRACARE_PERSON_CONFIDENCE", "0.55")),
+    "dog": float(os.getenv("AIRACARE_DOG_CONFIDENCE", "0.65")),
+    "cat": float(os.getenv("AIRACARE_CAT_CONFIDENCE", "0.80")),
+    "horse": float(os.getenv("AIRACARE_HORSE_CONFIDENCE", "0.65")),
+    "cow": float(os.getenv("AIRACARE_COW_CONFIDENCE", "0.65")),
+    "deer": float(os.getenv("AIRACARE_DEER_CONFIDENCE", "0.65")),
+    "goat": float(os.getenv("AIRACARE_GOAT_CONFIDENCE", "0.70")),
+    "elephant": float(os.getenv("AIRACARE_ELEPHANT_CONFIDENCE", "0.70")),
+}
+DEFAULT_CLASS_CONFIDENCE = float(os.getenv("AIRACARE_DEFAULT_CONFIDENCE", "0.65"))
+MIN_CONSECUTIVE_FRAMES = int(os.getenv("AIRACARE_MIN_CONFIRMATION_FRAMES", "3"))
+MIN_BOX_AREA_RATIO = float(os.getenv("AIRACARE_MIN_BOX_AREA_RATIO", "0.0025"))
+MAX_BOX_AREA_RATIO = float(os.getenv("AIRACARE_MAX_BOX_AREA_RATIO", "0.85"))
+MAX_OUTSIDE_RATIO = float(os.getenv("AIRACARE_MAX_BOX_OUTSIDE_RATIO", "0.10"))
+MIN_BOX_DIMENSION_PX = float(os.getenv("AIRACARE_MIN_BOX_DIMENSION_PX", "8"))
+TRACK_STALE_SECONDS = float(os.getenv("AIRACARE_WEB_TRACK_STALE_SECONDS", "8.0"))
+QUALITY_MIN_BRIGHTNESS = float(os.getenv("AIRACARE_QUALITY_MIN_BRIGHTNESS", "18"))
+QUALITY_MAX_BRIGHTNESS = float(os.getenv("AIRACARE_QUALITY_MAX_BRIGHTNESS", "238"))
+QUALITY_MIN_CONTRAST = float(os.getenv("AIRACARE_QUALITY_MIN_CONTRAST", "10"))
+QUALITY_MIN_BLUR_VARIANCE = float(os.getenv("AIRACARE_QUALITY_MIN_BLUR_VARIANCE", "18"))
+QUALITY_MIN_EDGE_RATIO = float(os.getenv("AIRACARE_QUALITY_MIN_EDGE_RATIO", "0.002"))
+
 
 def resolve_web_model_backend() -> str:
     requested = os.getenv("AIRACARE_MODEL_BACKEND", "android_tflite")
@@ -69,6 +92,11 @@ class _TrackMemory:
     class_name: str
     bbox: tuple[float, float, float, float]
     last_seen: float = field(default_factory=time.perf_counter)
+    first_seen: float = field(default_factory=time.perf_counter)
+    consecutive_frames: int = 0
+    max_confidence: float = 0.0
+    confidence_sum: float = 0.0
+    observation_count: int = 0
 
 
 class WebDetectionService:
@@ -146,6 +174,19 @@ class WebDetectionService:
         with self.lock:
             frame_height, frame_width = frame.shape[:2]
             logger.info("image decoded width=%s height=%s", frame_width, frame_height)
+            frame_quality = _analyze_frame_quality(frame)
+            if not frame_quality["ok"]:
+                logger.warning(
+                    "frame rejected quality=%s brightness=%.2f contrast=%.2f blur=%.2f edgeRatio=%.5f",
+                    frame_quality["reason"],
+                    frame_quality["brightness"],
+                    frame_quality["contrast"],
+                    frame_quality["blurVariance"],
+                    frame_quality["edgeRatio"],
+                )
+                self._reset_transient_state()
+                return self._empty_result(frame_width, frame_height, frame_quality)
+
             runtime_resolution = (frame_width, frame_height)
             if self.calibration is not None and self.runtime_focal_resolution != runtime_resolution:
                 self.runtime_focal_length, self.runtime_focal_warning = focal_length_for_runtime_resolution(
@@ -197,12 +238,60 @@ class WebDetectionService:
                 class_id = int(detected_box.cls[0])
                 class_name = self.model_names.get(class_id, f"class_{class_id}").lower()
                 if class_name not in TARGET_CLASS_SET:
+                    logger.info(
+                        "detection rejected class_not_target rawClassId=%s mappedLabel=%s modelPath=%s",
+                        class_id,
+                        class_name,
+                        self.model_path,
+                    )
                     continue
 
                 confidence = float(detected_box.conf[0])
-                x1, y1, x2, y2 = (float(value) for value in detected_box.xyxy[0].tolist())
-                bbox = (x1, y1, x2, y2)
-                track_id = self._assign_track_id(class_name, bbox, now)
+                threshold = _confidence_threshold_for_class(class_name)
+                if confidence < threshold:
+                    logger.info(
+                        "detection rejected low_confidence rawClassId=%s mappedLabel=%s confidence=%.4f threshold=%.4f modelPath=%s",
+                        class_id,
+                        class_name,
+                        confidence,
+                        threshold,
+                        self.model_path,
+                    )
+                    continue
+
+                raw_bbox = tuple(float(value) for value in detected_box.xyxy[0].tolist())
+                bbox_validation = _validate_and_clamp_bbox(raw_bbox, frame_width, frame_height)
+                if not bbox_validation["ok"]:
+                    logger.info(
+                        "detection rejected bbox reason=%s rawClassId=%s mappedLabel=%s confidence=%.4f bbox=%s areaRatio=%.5f outsideRatio=%.5f",
+                        bbox_validation["reason"],
+                        class_id,
+                        class_name,
+                        confidence,
+                        tuple(round(value, 1) for value in raw_bbox),
+                        bbox_validation["areaRatio"],
+                        bbox_validation["outsideRatio"],
+                    )
+                    continue
+
+                bbox = bbox_validation["bbox"]
+                x1, y1, x2, y2 = bbox
+                track = self._assign_track(class_name, bbox, confidence, now)
+                track_id = track.track_id
+                if track.consecutive_frames < MIN_CONSECUTIVE_FRAMES:
+                    logger.info(
+                        "detection pending confirmation frameClass=%s confidence=%.4f threshold=%.4f trackId=%s consecutiveFrames=%s/%s bboxAreaRatio=%.5f frameQuality=%s",
+                        class_name,
+                        confidence,
+                        threshold,
+                        track_id,
+                        track.consecutive_frames,
+                        MIN_CONSECUTIVE_FRAMES,
+                        bbox_validation["areaRatio"],
+                        frame_quality["reason"],
+                    )
+                    continue
+
                 center = ((x1 + x2) / 2, (y1 + y2) / 2)
                 self.track_history.update(track_id, class_id, class_name, confidence, bbox, center)
 
@@ -255,6 +344,12 @@ class WebDetectionService:
                         "label": class_name,
                         "classId": class_id,
                         "confidence": confidence,
+                        "confidenceThreshold": threshold,
+                        "confirmed": True,
+                        "consecutiveFrames": track.consecutive_frames,
+                        "firstSeenEpochMillis": int((time.time() - max(0.0, now - track.first_seen)) * 1000),
+                        "maxConfidence": track.max_confidence,
+                        "averageConfidence": track.confidence_sum / max(1, track.observation_count),
                         "distanceMeters": distance_m,
                         "riskLevel": smoothed_level,
                         "rawRiskLevel": raw_risk.level,
@@ -267,6 +362,7 @@ class WebDetectionService:
                         "ttcSeconds": motion.ttc_seconds,
                         "pathZone": path_zone,
                         "boundingBox": {"left": x1, "top": y1, "right": x2, "bottom": y2},
+                        "bboxAreaRatio": bbox_validation["areaRatio"],
                     }
                 )
 
@@ -316,12 +412,17 @@ class WebDetectionService:
                 },
                 "detections": detections,
                 "timestamp": timestamp_ms,
+                "frameQuality": frame_quality,
+                "confirmation": {
+                    "minConsecutiveFrames": MIN_CONSECUTIVE_FRAMES,
+                    "classConfidenceThresholds": CLASS_CONFIDENCE_THRESHOLDS,
+                },
                 "calibrationWarning": self.runtime_focal_warning,
                 "calibrationPath": self.config.calibration_path,
                 "runtimeFocalLengthPixels": self.runtime_focal_length,
             }
 
-    def _assign_track_id(self, class_name: str, bbox: tuple[float, float, float, float], now: float) -> int:
+    def _assign_track(self, class_name: str, bbox: tuple[float, float, float, float], confidence: float, now: float) -> _TrackMemory:
         best_track = None
         best_overlap = 0.0
         for track in self.web_tracks:
@@ -331,18 +432,172 @@ class WebDetectionService:
             if overlap > best_overlap:
                 best_track = track
                 best_overlap = overlap
-        if best_track is not None and best_overlap >= 0.25:
+        if best_track is not None and best_overlap >= 0.20:
             best_track.bbox = bbox
             best_track.last_seen = now
-            return best_track.track_id
+            best_track.consecutive_frames += 1
+            best_track.max_confidence = max(best_track.max_confidence, confidence)
+            best_track.confidence_sum += confidence
+            best_track.observation_count += 1
+            return best_track
 
         track_id = self.next_track_id
         self.next_track_id += 1
-        self.web_tracks.append(_TrackMemory(track_id=track_id, class_name=class_name, bbox=bbox, last_seen=now))
-        return track_id
+        track = _TrackMemory(
+            track_id=track_id,
+            class_name=class_name,
+            bbox=bbox,
+            last_seen=now,
+            first_seen=now,
+            consecutive_frames=1,
+            max_confidence=confidence,
+            confidence_sum=confidence,
+            observation_count=1,
+        )
+        self.web_tracks.append(track)
+        return track
 
     def _cleanup_web_tracks(self, now: float) -> None:
-        self.web_tracks = [track for track in self.web_tracks if now - track.last_seen <= 2.0]
+        self.web_tracks = [track for track in self.web_tracks if now - track.last_seen <= TRACK_STALE_SECONDS]
+
+    def _reset_transient_state(self) -> None:
+        self.web_tracks.clear()
+        self.distance_history = DistanceHistory()
+        self.motion_analyzer = RelativeMotionAnalyzer()
+        self.risk_smoother = RiskSmoother()
+        self.track_history = TrackHistory()
+        self.warning_manager = WarningManager(warnings_enabled=True, audio_enabled=False)
+
+    def _empty_result(self, frame_width: int, frame_height: int, frame_quality: dict[str, Any]) -> dict[str, Any]:
+        timestamp_ms = int(time.time() * 1000)
+        return {
+            "ok": True,
+            "modelPath": str(self.model_path) if self.model_path else None,
+            "usingPretrainedFallback": self.using_pretrained_fallback,
+            "frameWidth": frame_width,
+            "frameHeight": frame_height,
+            "sceneRisk": "UNKNOWN",
+            "warning": {
+                "level": NONE,
+                "message": "",
+                "trackId": None,
+                "className": None,
+                "riskLevel": "UNKNOWN",
+                "distanceMeters": None,
+                "ttcSeconds": None,
+            },
+            "detections": [],
+            "timestamp": timestamp_ms,
+            "frameQuality": frame_quality,
+            "confirmation": {
+                "minConsecutiveFrames": MIN_CONSECUTIVE_FRAMES,
+                "classConfidenceThresholds": CLASS_CONFIDENCE_THRESHOLDS,
+            },
+            "calibrationWarning": self.runtime_focal_warning,
+            "calibrationPath": self.config.calibration_path,
+            "runtimeFocalLengthPixels": self.runtime_focal_length,
+            }
+
+
+def _confidence_threshold_for_class(class_name: str) -> float:
+    return CLASS_CONFIDENCE_THRESHOLDS.get(class_name.lower(), DEFAULT_CLASS_CONFIDENCE)
+
+
+def _analyze_frame_quality(frame: Any) -> dict[str, Any]:
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    brightness = float(np.mean(gray))
+    contrast = float(np.std(gray))
+    blur_variance = float(cv2.Laplacian(gray, cv2.CV_64F).var())
+    edges = cv2.Canny(gray, 60, 160)
+    edge_ratio = float(np.count_nonzero(edges)) / float(max(1, gray.size))
+    reason = "GOOD"
+    ok = True
+    if brightness < QUALITY_MIN_BRIGHTNESS:
+        ok = False
+        reason = "TOO_DARK"
+    elif brightness > QUALITY_MAX_BRIGHTNESS:
+        ok = False
+        reason = "OVEREXPOSED"
+    elif contrast < QUALITY_MIN_CONTRAST:
+        ok = False
+        reason = "LOW_VISUAL_INFORMATION"
+    elif blur_variance < QUALITY_MIN_BLUR_VARIANCE and edge_ratio < QUALITY_MIN_EDGE_RATIO:
+        ok = False
+        reason = "BLUR_OR_OBSTRUCTION"
+    elif edge_ratio < QUALITY_MIN_EDGE_RATIO:
+        ok = False
+        reason = "CAMERA_OBSTRUCTED"
+
+    return {
+        "ok": ok,
+        "reason": reason,
+        "brightness": brightness,
+        "contrast": contrast,
+        "blurVariance": blur_variance,
+        "edgeRatio": edge_ratio,
+    }
+
+
+def _validate_and_clamp_bbox(
+    bbox: tuple[float, float, float, float],
+    frame_width: int,
+    frame_height: int,
+) -> dict[str, Any]:
+    left, top, right, bottom = bbox
+    if not all(np.isfinite(value) for value in bbox):
+        return _bbox_result(False, "NON_FINITE_COORDINATES", bbox, bbox, frame_width, frame_height)
+    raw_width = right - left
+    raw_height = bottom - top
+    if raw_width <= 0 or raw_height <= 0:
+        return _bbox_result(False, "INVALID_COORDINATES", bbox, bbox, frame_width, frame_height)
+
+    clamped = (
+        float(np.clip(left, 0, frame_width)),
+        float(np.clip(top, 0, frame_height)),
+        float(np.clip(right, 0, frame_width)),
+        float(np.clip(bottom, 0, frame_height)),
+    )
+    c_left, c_top, c_right, c_bottom = clamped
+    width = max(0.0, c_right - c_left)
+    height = max(0.0, c_bottom - c_top)
+    if width < MIN_BOX_DIMENSION_PX or height < MIN_BOX_DIMENSION_PX:
+        return _bbox_result(False, "BOX_TOO_SMALL", bbox, clamped, frame_width, frame_height)
+
+    frame_area = float(max(1, frame_width * frame_height))
+    raw_area = max(0.0, raw_width * raw_height)
+    clamped_area = width * height
+    area_ratio = clamped_area / frame_area
+    outside_ratio = max(0.0, raw_area - clamped_area) / max(1.0, raw_area)
+    if area_ratio < MIN_BOX_AREA_RATIO:
+        return _bbox_result(False, "BOX_AREA_TOO_SMALL", bbox, clamped, frame_width, frame_height)
+    if area_ratio > MAX_BOX_AREA_RATIO:
+        return _bbox_result(False, "BOX_AREA_TOO_LARGE", bbox, clamped, frame_width, frame_height)
+    if outside_ratio > MAX_OUTSIDE_RATIO:
+        return _bbox_result(False, "BOX_MOSTLY_OUTSIDE_FRAME", bbox, clamped, frame_width, frame_height)
+
+    return _bbox_result(True, "OK", bbox, clamped, frame_width, frame_height)
+
+
+def _bbox_result(
+    ok: bool,
+    reason: str,
+    raw_bbox: tuple[float, float, float, float],
+    clamped_bbox: tuple[float, float, float, float],
+    frame_width: int,
+    frame_height: int,
+) -> dict[str, Any]:
+    left, top, right, bottom = raw_bbox
+    c_left, c_top, c_right, c_bottom = clamped_bbox
+    raw_area = max(0.0, right - left) * max(0.0, bottom - top)
+    clamped_area = max(0.0, c_right - c_left) * max(0.0, c_bottom - c_top)
+    frame_area = float(max(1, frame_width * frame_height))
+    return {
+        "ok": ok,
+        "reason": reason,
+        "bbox": clamped_bbox,
+        "areaRatio": clamped_area / frame_area,
+        "outsideRatio": max(0.0, raw_area - clamped_area) / max(1.0, raw_area),
+    }
 
 
 def _decode_data_url(image_data_url: str) -> Any:
