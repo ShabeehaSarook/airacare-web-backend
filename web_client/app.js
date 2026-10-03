@@ -27,12 +27,13 @@ const firebaseConfig = {
 
 const DETECTION_INTERVAL_MS = 50;
 const MAX_CAPTURE_WIDTH = 640;
+const MAX_PET_CROP_SIZE = 768;
 const DETECTION_TIMEOUT_MS = 60000;
 const CAMERA_OPEN_TIMEOUT_MS = 15000;
 const VIDEO_PLAY_TIMEOUT_MS = 10000;
 const PET_LABELS = new Set(["dog", "cat"]);
 const STABLE_PET_FRAMES = 2;
-const FRONTEND_BUILD = "phone-runtime-debug-2026-10-01";
+const FRONTEND_BUILD = "capture-image-fix-2026-10-03";
 const CAPTURE_COOLDOWN_MS = 2500;
 const DETECTION_EVENT_SAVE_COOLDOWN_MS = 45000;
 const DEFAULT_API_BASE_URL = "https://airacare-web-backend.onrender.com";
@@ -496,7 +497,7 @@ async function captureAndStorePet() {
       : "Crop ready. Background removal fallback was used.";
   } catch (error) {
     console.error(error);
-    captureStoreStatus.textContent = "Could not create sticker. Try again.";
+    captureStoreStatus.textContent = `Sticker error: ${error?.message || "Could not create sticker"}`;
   } finally {
     captureInFlight = false;
     updateCaptureStoreButton();
@@ -529,8 +530,11 @@ function cropPetFromCurrentFrame(detection, result) {
   right = clamp(right + padding, left + 1, video.videoWidth);
   bottom = clamp(bottom + padding, top + 1, video.videoHeight);
 
-  const cropWidth = Math.max(1, Math.round(right - left));
-  const cropHeight = Math.max(1, Math.round(bottom - top));
+  const sourceCropWidth = Math.max(1, Math.round(right - left));
+  const sourceCropHeight = Math.max(1, Math.round(bottom - top));
+  const outputScale = Math.min(1, MAX_PET_CROP_SIZE / Math.max(sourceCropWidth, sourceCropHeight));
+  const cropWidth = Math.max(1, Math.round(sourceCropWidth * outputScale));
+  const cropHeight = Math.max(1, Math.round(sourceCropHeight * outputScale));
   console.info("[Airacare] Capture crop:", {
     videoWidth: video.videoWidth,
     videoHeight: video.videoHeight,
@@ -538,6 +542,9 @@ function cropPetFromCurrentFrame(detection, result) {
     modelFrameHeight: frameHeight,
     boundingBox: box,
     crop: { left, top, right, bottom },
+    sourceCropWidth,
+    sourceCropHeight,
+    outputScale,
     cropWidth,
     cropHeight
   });
@@ -548,8 +555,8 @@ function cropPetFromCurrentFrame(detection, result) {
     video,
     Math.round(left),
     Math.round(top),
-    cropWidth,
-    cropHeight,
+    sourceCropWidth,
+    sourceCropHeight,
     0,
     0,
     cropWidth,
@@ -628,7 +635,7 @@ async function savePendingCapture() {
     pendingCapture = null;
   } catch (error) {
     logFirebaseError("Save capture failed", error);
-    capturePreviewNote.textContent = firebaseUserMessage(error, "Save failed. Check backend image upload or Firestore rules.");
+    capturePreviewNote.textContent = firebaseUserMessage(error, `Save failed: ${error?.message || "image upload or Firestore error"}`);
     saveCaptureButton.disabled = false;
   } finally {
     saveInFlight = false;
