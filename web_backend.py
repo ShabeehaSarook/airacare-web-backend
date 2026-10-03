@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 import base64
+import importlib.util
 from io import BytesIO
 import logging
 import os
@@ -45,6 +46,9 @@ ALLOWED_ORIGINS = {
 
 MAX_CAPTURE_UPLOAD_BYTES = int(os.getenv("AIRACARE_CAPTURE_UPLOAD_MAX_BYTES", str(5 * 1024 * 1024)))
 CLOUDINARY_FOLDER = os.getenv("AIRACARE_CLOUDINARY_FOLDER", "airacare/captured_pets")
+BACKGROUND_REMOVAL_ENGINE = os.getenv("AIRACARE_BACKGROUND_REMOVAL_ENGINE", "rembg_opencv_fallback")
+REMBG_MODEL_NAME = os.getenv("AIRACARE_REMBG_MODEL", "u2netp")
+_rembg_session = None
 
 
 def _cloudinary_configured() -> bool:
@@ -96,6 +100,14 @@ def _capture_storage_status() -> str:
     return "cloudinary_not_configured"
 
 
+def _rembg_status() -> str:
+    if BACKGROUND_REMOVAL_ENGINE == "opencv_only":
+        return "disabled_opencv_only"
+    if importlib.util.find_spec("rembg") is None:
+        return "rembg_not_installed_opencv_fallback"
+    return f"rembg_available_model_{REMBG_MODEL_NAME}"
+
+
 @app.after_request
 def add_cors_headers(response):
     origin = request.headers.get("Origin")
@@ -138,6 +150,8 @@ def health():
             "usingPretrainedFallback": service.using_pretrained_fallback,
             "captureImageStorage": _capture_storage_status(),
             "captureImageUploadMaxBytes": MAX_CAPTURE_UPLOAD_BYTES,
+            "backgroundRemovalEngine": BACKGROUND_REMOVAL_ENGINE,
+            "backgroundRemovalAi": _rembg_status(),
             "minConfirmationFrames": MIN_CONSECUTIVE_FRAMES,
             "classConfidenceThresholds": CLASS_CONFIDENCE_THRESHOLDS,
         }
@@ -198,8 +212,9 @@ def remove_background():
 
     try:
         started_at = time.perf_counter()
+        image_bytes = _decode_data_url_bytes(image)
         frame = _decode_data_url(image)
-        png_data_url, background_removed, method = _remove_background_grabcut(frame)
+        png_data_url, background_removed, method = _remove_background_best_effort(frame, image_bytes)
         processing_time_ms = int((time.perf_counter() - started_at) * 1000)
         logger.info(
             "background removal completed label=%s method=%s removed=%s processing_ms=%s",
@@ -320,9 +335,7 @@ def delete_captured_pet_image():
 
 
 def _decode_data_url(image_data_url: str) -> np.ndarray:
-    if "," in image_data_url:
-        image_data_url = image_data_url.split(",", 1)[1]
-    image_bytes = base64.b64decode(image_data_url)
+    image_bytes = _decode_data_url_bytes(image_data_url)
     encoded = np.frombuffer(image_bytes, dtype=np.uint8)
     frame = cv2.imdecode(encoded, cv2.IMREAD_COLOR)
     if frame is None or frame.size == 0:
@@ -330,10 +343,54 @@ def _decode_data_url(image_data_url: str) -> np.ndarray:
     return frame
 
 
+def _decode_data_url_bytes(image_data_url: str) -> bytes:
+    if "," in image_data_url:
+        image_data_url = image_data_url.split(",", 1)[1]
+    return base64.b64decode(image_data_url)
+
+
 def _safe_identifier(value: str) -> str:
     cleaned = "".join(character if character.isalnum() or character in {"_", "-"} else "_" for character in value)
     cleaned = cleaned.strip("_")
     return cleaned[:80] or "anonymous"
+
+
+def _remove_background_best_effort(frame: np.ndarray, image_bytes: bytes) -> tuple[str, bool, str]:
+    if BACKGROUND_REMOVAL_ENGINE != "opencv_only":
+        try:
+            return _remove_background_rembg(image_bytes)
+        except Exception as error:
+            logger.warning("rembg background removal failed, falling back to OpenCV: %s", error)
+    return _remove_background_grabcut(frame)
+
+
+def _remove_background_rembg(image_bytes: bytes) -> tuple[str, bool, str]:
+    global _rembg_session
+    if importlib.util.find_spec("rembg") is None:
+        raise RuntimeError("rembg is not installed")
+
+    from rembg import new_session, remove
+
+    if _rembg_session is None:
+        logger.info("loading rembg session model=%s", REMBG_MODEL_NAME)
+        _rembg_session = new_session(REMBG_MODEL_NAME)
+
+    output_bytes = remove(
+        image_bytes,
+        session=_rembg_session,
+        force_return_bytes=True,
+        alpha_matting=False,
+    )
+    decoded = cv2.imdecode(np.frombuffer(output_bytes, dtype=np.uint8), cv2.IMREAD_UNCHANGED)
+    if decoded is None or decoded.size == 0:
+        raise ValueError("rembg returned an undecodable image")
+    if decoded.ndim < 3 or decoded.shape[2] != 4:
+        raise ValueError("rembg did not return an RGBA/transparent image")
+    alpha = decoded[:, :, 3]
+    alpha_ratio = float(np.count_nonzero(alpha)) / float(max(1, alpha.shape[0] * alpha.shape[1]))
+    if alpha_ratio < 0.03 or alpha_ratio > 0.98:
+        raise ValueError(f"rembg alpha mask is uncertain ratio={alpha_ratio:.3f}")
+    return "data:image/png;base64," + base64.b64encode(output_bytes).decode("ascii"), True, f"rembg_{REMBG_MODEL_NAME}"
 
 
 def _remove_background_grabcut(frame: np.ndarray) -> tuple[str, bool, str]:
