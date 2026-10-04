@@ -418,6 +418,8 @@ def _remove_background_grabcut(frame: np.ndarray) -> tuple[str, bool, str]:
     cv2.grabCut(process_frame, mask, rect, bgd_model, fgd_model, 2, cv2.GC_INIT_WITH_MASK)
     foreground_mask = np.where((mask == cv2.GC_FGD) | (mask == cv2.GC_PR_FGD), 255, 0).astype(np.uint8)
     foreground_mask = _refine_foreground_mask(foreground_mask)
+    foreground_mask = _remove_border_connected_background(process_frame, foreground_mask)
+    foreground_mask = _refine_foreground_mask(foreground_mask)
 
     foreground_ratio = float(np.count_nonzero(foreground_mask)) / float(max(1, process_width * process_height))
     if foreground_ratio < 0.04 or foreground_ratio > 0.96:
@@ -426,7 +428,7 @@ def _remove_background_grabcut(frame: np.ndarray) -> tuple[str, bool, str]:
     if foreground_mask.shape[:2] != (height, width):
         foreground_mask = cv2.resize(foreground_mask, (width, height), interpolation=cv2.INTER_LINEAR)
     foreground_mask = cv2.GaussianBlur(foreground_mask, (5, 5), 0)
-    return _encode_png_with_alpha(frame, foreground_mask), True, "opencv_grabcut_trimap_components"
+    return _encode_png_with_alpha(frame, foreground_mask), True, "opencv_grabcut_trimap_components_v2"
 
 
 def _build_grabcut_trimap(width: int, height: int) -> tuple[tuple[int, int, int, int], np.ndarray]:
@@ -515,6 +517,79 @@ def _keep_foreground_components(mask: np.ndarray) -> np.ndarray:
             keep[component_id] = False
 
     return np.where(keep[labels], 255, 0).astype(np.uint8)
+
+
+def _remove_border_connected_background(frame: np.ndarray, mask: np.ndarray) -> np.ndarray:
+    """Remove foreground pixels that match the visible crop-border background.
+
+    The crop usually contains a small padded border around the animal. Pavement/floor
+    artifacts that survive GrabCut often share color with that border and remain
+    connected to the crop edge. This removes only those border-connected regions,
+    which is safer than globally deleting a color from the animal body.
+    """
+    height, width = mask.shape[:2]
+    if width < 16 or height < 16 or np.count_nonzero(mask) == 0:
+        return mask
+
+    border = max(2, int(round(min(width, height) * 0.07)))
+    border_region = np.zeros((height, width), dtype=np.uint8)
+    border_region[:border, :] = 255
+    border_region[-border:, :] = 255
+    border_region[:, :border] = 255
+    border_region[:, -border:] = 255
+
+    lab = cv2.cvtColor(frame, cv2.COLOR_BGR2LAB).astype(np.float32)
+    border_pixels = lab[border_region == 255]
+    if border_pixels.size == 0:
+        return mask
+
+    # Use several robust border color anchors because road/floor backgrounds can vary.
+    anchors = [
+        np.percentile(border_pixels, 20, axis=0),
+        np.percentile(border_pixels, 50, axis=0),
+        np.percentile(border_pixels, 80, axis=0),
+    ]
+    distances = [np.linalg.norm(lab - anchor.reshape(1, 1, 3), axis=2) for anchor in anchors]
+    min_distance = np.minimum.reduce(distances)
+    threshold = float(os.getenv("AIRACARE_BG_BORDER_COLOR_DISTANCE", "20"))
+    background_like = (min_distance <= threshold).astype(np.uint8) * 255
+
+    # Only remove background-colored areas that connect to the crop edge through
+    # the current foreground mask. This avoids deleting similarly-colored fur in
+    # the middle of the animal.
+    candidate = cv2.bitwise_and(background_like, mask)
+    component_count, labels, stats, _ = cv2.connectedComponentsWithStats(candidate, connectivity=8)
+    if component_count <= 1:
+        return mask
+
+    remove = np.zeros_like(mask)
+    min_remove_area = max(8, int(width * height * 0.002))
+    for component_id in range(1, component_count):
+        area = int(stats[component_id, cv2.CC_STAT_AREA])
+        if area < min_remove_area:
+            continue
+        left = int(stats[component_id, cv2.CC_STAT_LEFT])
+        top = int(stats[component_id, cv2.CC_STAT_TOP])
+        comp_width = int(stats[component_id, cv2.CC_STAT_WIDTH])
+        comp_height = int(stats[component_id, cv2.CC_STAT_HEIGHT])
+        touches_edge = (
+            left <= border
+            or top <= border
+            or left + comp_width >= width - border
+            or top + comp_height >= height - border
+        )
+        if touches_edge:
+            remove[labels == component_id] = 255
+
+    if np.count_nonzero(remove) == 0:
+        return mask
+
+    cleaned = mask.copy()
+    cleaned[remove == 255] = 0
+    foreground_ratio = float(np.count_nonzero(cleaned)) / float(max(1, width * height))
+    if foreground_ratio < 0.04:
+        return mask
+    return cleaned
 
 
 def _encode_png_with_alpha(frame: np.ndarray, alpha: np.ndarray) -> str:
