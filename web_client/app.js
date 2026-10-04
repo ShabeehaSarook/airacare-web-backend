@@ -26,14 +26,14 @@ const firebaseConfig = {
 };
 
 const DETECTION_INTERVAL_MS = 50;
-const MAX_CAPTURE_WIDTH = 640;
+const MAX_CAPTURE_WIDTH = 512;
 const MAX_PET_CROP_SIZE = 768;
 const DETECTION_TIMEOUT_MS = 60000;
 const CAMERA_OPEN_TIMEOUT_MS = 15000;
 const VIDEO_PLAY_TIMEOUT_MS = 10000;
 const PET_LABELS = new Set(["dog", "cat"]);
-const STABLE_PET_FRAMES = 2;
-const FRONTEND_BUILD = "capture-image-fix-2026-10-03";
+const STABLE_PET_FRAMES = 1;
+const FRONTEND_BUILD = "stale-frame-speed-fix-2026-10-04";
 const CAPTURE_COOLDOWN_MS = 2500;
 const DETECTION_EVENT_SAVE_COOLDOWN_MS = 45000;
 const DEFAULT_API_BASE_URL = "https://airacare-web-backend.onrender.com";
@@ -681,7 +681,7 @@ async function saveDetections(result) {
   }
   let savedAny = false;
   for (const detection of result.detections || []) {
-    const validationError = detectionSaveValidationError(detection);
+    const validationError = detectionSaveValidationError(detection, result);
     if (validationError) {
       console.info("[Airacare] Detection save skipped:", validationError, summarizeDetectionForLog(detection));
       continue;
@@ -1019,7 +1019,7 @@ function isCandidateDetection(detection) {
   );
 }
 
-function detectionSaveValidationError(detection) {
+function detectionSaveValidationError(detection, result) {
   if (!detection) return "missing detection";
   if (detection.confirmed !== true) return "not confirmed";
   const label = normalizeLabel(detection.label);
@@ -1028,7 +1028,8 @@ function detectionSaveValidationError(detection) {
   if (!isValidBoundingBox(detection.boundingBox)) return "invalid bounding box";
   if (typeof detection.distanceMeters !== "number" || !Number.isFinite(detection.distanceMeters)) return "distance unavailable";
   if (!detection.riskLevel || detection.riskLevel === "UNKNOWN") return "risk unavailable";
-  if (detection.consecutiveFrames && Number(detection.consecutiveFrames) < 3) return "insufficient consecutive frames";
+  const requiredFrames = Number(result?.confirmation?.minConsecutiveFrames || 2);
+  if (detection.consecutiveFrames && Number(detection.consecutiveFrames) < requiredFrames) return "insufficient consecutive frames";
   return "";
 }
 

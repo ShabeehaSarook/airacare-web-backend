@@ -217,6 +217,7 @@ class WebDetectionService:
             candidate_detections: list[dict[str, Any]] = []
             risks: list[RiskResult] = []
             warning_candidates: list[WarningCandidate] = []
+            valid_detection_count = 0
 
             self._cleanup_web_tracks(now)
 
@@ -276,6 +277,7 @@ class WebDetectionService:
                     continue
 
                 bbox = bbox_validation["bbox"]
+                valid_detection_count += 1
                 x1, y1, x2, y2 = bbox
                 track = self._assign_track(class_name, bbox, confidence, now, frame_width, frame_height)
                 track_id = track.track_id
@@ -408,6 +410,14 @@ class WebDetectionService:
                         "detectedAtEpochMillis": timestamp_ms,
                         "timestamp": timestamp_ms,
                     }
+                )
+
+            if valid_detection_count == 0:
+                self._reset_transient_state()
+                logger.info(
+                    "frame has no valid detections; cleared transient track/risk state frameId=%s frameQuality=%s",
+                    metadata.get("frameId"),
+                    frame_quality["reason"],
                 )
 
             return {
