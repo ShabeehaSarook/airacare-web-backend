@@ -18,6 +18,7 @@ import cv2
 from flask import Flask, jsonify, request, send_from_directory
 import numpy as np
 
+from src.android_tflite_detector import _threshold_for_label as android_tflite_threshold_for_label
 from src.config import TARGET_CLASSES
 from src.web_detection_service import (
     CLASS_CONFIDENCE_THRESHOLDS,
@@ -138,7 +139,7 @@ def health():
         {
             "status": "ok",
             "service": "airacare-web-backend",
-            "build": "render-free-stability-192",
+            "build": "render-tflite-threshold-fix-2026-10-04",
             "ok": True,
             "modelReady": model_error is None,
             "modelError": model_error,
@@ -154,6 +155,10 @@ def health():
             "backgroundRemovalAi": _rembg_status(),
             "minConfirmationFrames": MIN_CONSECUTIVE_FRAMES,
             "classConfidenceThresholds": CLASS_CONFIDENCE_THRESHOLDS,
+            "tfliteParserThresholds": {
+                label: android_tflite_threshold_for_label(label)
+                for label in ("person", "dog", "cat", "horse", "cow", "deer", "goat", "elephant")
+            },
         }
     )
 
