@@ -19,6 +19,7 @@ from src.warning import CAUTION, DANGER, WarningCandidate, WarningManager, selec
 import src.calibrate_distance as calibrate_distance
 from src.validate_distance_accuracy import calculate_error
 from src.android_tflite_detector import ANDROID_TFLITE_LABELS_PATH
+from src.android_tflite_detector import _threshold_for_label as android_tflite_threshold_for_label
 from src.web_detection_service import (
     MIN_CONSECUTIVE_FRAMES,
     _analyze_frame_quality,
@@ -41,6 +42,11 @@ class AiracareCoreTests(unittest.TestCase):
         self.assertGreaterEqual(_confidence_threshold_for_class("cat"), 0.75)
         self.assertGreaterEqual(_confidence_threshold_for_class("dog"), 0.50)
         self.assertGreaterEqual(_confidence_threshold_for_class("goat"), 0.60)
+
+    def test_android_tflite_parser_thresholds_match_web_false_positive_guards(self):
+        self.assertGreaterEqual(android_tflite_threshold_for_label("person"), 0.40)
+        self.assertGreaterEqual(android_tflite_threshold_for_label("dog"), 0.50)
+        self.assertGreaterEqual(android_tflite_threshold_for_label("cat"), 0.75)
 
     def test_frame_quality_rejects_covered_camera(self):
         covered = np.zeros((160, 160, 3), dtype=np.uint8)

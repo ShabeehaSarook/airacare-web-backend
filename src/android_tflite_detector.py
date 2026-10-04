@@ -16,7 +16,9 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 ANDROID_TFLITE_MODEL_PATH = PROJECT_ROOT / "models" / "airacare_custom.tflite"
 ANDROID_TFLITE_LABELS_PATH = PROJECT_ROOT / "models" / "airacare_custom_labels.txt"
 
-PERSON_CONFIDENCE = 0.25
+PERSON_CONFIDENCE = 0.40
+DOG_CONFIDENCE = 0.50
+CAT_CONFIDENCE = 0.75
 SMALL_ANIMAL_CONFIDENCE = 0.50
 LARGE_ANIMAL_CONFIDENCE = 0.55
 DEFAULT_CONFIDENCE = 0.50
@@ -265,6 +267,10 @@ def _threshold_for_label(label: str) -> float:
     label = label.lower()
     if label == "person":
         return PERSON_CONFIDENCE
+    if label == "dog":
+        return DOG_CONFIDENCE
+    if label == "cat":
+        return CAT_CONFIDENCE
     if label in {"dog", "cat"}:
         return SMALL_ANIMAL_CONFIDENCE
     if label in {"horse", "cow", "deer", "goat", "elephant"}:
