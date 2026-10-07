@@ -247,11 +247,11 @@ button:disabled {
   padding: 8px;
 }
 
-.collection-card img {
+.collection-card img,
+.collection-image-missing {
   display: block;
   width: 100%;
   aspect-ratio: 1;
-  object-fit: contain;
   background:
     linear-gradient(45deg, rgba(255, 255, 255, 0.08) 25%, transparent 25%),
     linear-gradient(-45deg, rgba(255, 255, 255, 0.08) 25%, transparent 25%),
@@ -260,6 +260,19 @@ button:disabled {
   background-color: #0b1518;
   background-position: 0 0, 0 8px, 8px -8px, -8px 0;
   background-size: 16px 16px;
+}
+
+.collection-card img {
+  object-fit: contain;
+}
+
+.collection-image-missing {
+  display: grid;
+  place-items: center;
+  padding: 12px;
+  color: #9db2ad;
+  text-align: center;
+  font-size: 12px;
 }
 
 .collection-card strong,

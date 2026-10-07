@@ -34,7 +34,7 @@ const CAMERA_OPEN_TIMEOUT_MS = 15000;
 const VIDEO_PLAY_TIMEOUT_MS = 10000;
 const PET_LABELS = new Set(["dog", "cat"]);
 const STABLE_PET_FRAMES = 1;
-const FRONTEND_BUILD = "high-res-capture-photoroom-2026-10-07";
+const FRONTEND_BUILD = "collection-metadata-polish-2026-10-07";
 const CAPTURE_COOLDOWN_MS = 2500;
 const DETECTION_EVENT_SAVE_COOLDOWN_MS = 45000;
 const DEFAULT_API_BASE_URL = "https://airacare-web-backend.onrender.com";
@@ -622,6 +622,10 @@ async function savePendingCapture() {
       imageUrl: uploadResult.imageUrl,
       imagePublicId: uploadResult.imagePublicId || null,
       storageProvider: uploadResult.storageProvider || "backend",
+      imageWidth: Number(uploadResult.imageWidth) || null,
+      imageHeight: Number(uploadResult.imageHeight) || null,
+      imageBytes: Number(uploadResult.imageBytes) || blob.size,
+      alphaCoverage: Number(uploadResult.alphaCoverage) || null,
       capturedAt: serverTimestamp(),
       capturedAtEpochMillis: pendingCapture.capturedAtEpochMillis,
       boundingBox: pendingCapture.boundingBox,
@@ -668,6 +672,9 @@ async function uploadCapturedPetImage(blob, capture) {
   }
   if (!response.ok || !data.ok || !data.imageUrl) {
     throw new Error(data.error || `Image upload failed with HTTP ${response.status}`);
+  }
+  if (!data.imagePublicId) {
+    throw new Error("Image upload did not return a Cloudinary public ID");
   }
   return data;
 }
@@ -782,12 +789,40 @@ function renderCollection() {
     card.className = "collection-card";
     const confidence = typeof item.confidence === "number" ? `${(item.confidence * 100).toFixed(0)}%` : "N/A";
     const capturedTime = formatFirestoreTime(item.capturedAt) || formatTime(item.capturedAtEpochMillis);
-    card.innerHTML = `
-      <img src="${escapeAttribute(item.imageUrl || "")}" alt="${escapeAttribute(item.label || "pet")} capture" loading="lazy" />
-      <strong>${escapeHtml(item.label || "unknown")} - ${confidence}</strong>
-      <span>${capturedTime}</span>
-      <span>${formatDistance(item.distanceMeters)} - ${item.riskLevel || "N/A"}</span>
-    `;
+    const imageUrl = String(item.imageUrl || "").trim();
+    if (imageUrl) {
+      const image = document.createElement("img");
+      image.src = imageUrl;
+      image.alt = `${item.label || "pet"} sticker`;
+      image.loading = "lazy";
+      image.addEventListener("error", () => {
+        image.replaceWith(createCollectionPlaceholder("Image unavailable"));
+      }, { once: true });
+      card.appendChild(image);
+    } else {
+      card.appendChild(createCollectionPlaceholder("Image unavailable"));
+    }
+
+    const title = document.createElement("strong");
+    title.textContent = `${item.label || "unknown"} - ${confidence}`;
+    card.appendChild(title);
+
+    const time = document.createElement("span");
+    time.textContent = capturedTime;
+    card.appendChild(time);
+
+    const risk = document.createElement("span");
+    risk.textContent = `${formatDistance(item.distanceMeters)} - ${item.riskLevel || "N/A"}`;
+    card.appendChild(risk);
+
+    const method = document.createElement("span");
+    method.textContent = collectionMethodLabel(item);
+    card.appendChild(method);
+
+    const dimensions = document.createElement("span");
+    dimensions.textContent = collectionImageDetails(item);
+    card.appendChild(dimensions);
+
     const deleteButton = document.createElement("button");
     deleteButton.type = "button";
     deleteButton.className = "delete-capture-button";
@@ -796,6 +831,29 @@ function renderCollection() {
     card.appendChild(deleteButton);
     collectionList.appendChild(card);
   }
+}
+
+function createCollectionPlaceholder(message) {
+  const placeholder = document.createElement("div");
+  placeholder.className = "collection-image-missing";
+  placeholder.textContent = message;
+  return placeholder;
+}
+
+function collectionMethodLabel(item) {
+  const provider = item.storageProvider || "cloudinary";
+  const method = item.backgroundRemovalMethod || "background removal";
+  return `${provider} - ${method}`;
+}
+
+function collectionImageDetails(item) {
+  const width = Number(item.imageWidth);
+  const height = Number(item.imageHeight);
+  const size = formatBytes(item.imageBytes);
+  const dimensions = Number.isFinite(width) && Number.isFinite(height) && width > 0 && height > 0
+    ? `${width}x${height}`
+    : "size unknown";
+  return `${dimensions} - ${size}`;
 }
 
 async function deleteCapturedPet(item) {
@@ -945,6 +1003,14 @@ function formatTime(epochMillis) {
 function formatFirestoreTime(timestamp) {
   if (!timestamp?.toDate) return "";
   return timestamp.toDate().toLocaleString();
+}
+
+function formatBytes(value) {
+  const bytes = Number(value);
+  if (!Number.isFinite(bytes) || bytes <= 0) return "bytes unknown";
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
 }
 
 function setStatus(message) {

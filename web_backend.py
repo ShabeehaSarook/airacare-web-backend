@@ -149,7 +149,7 @@ def health():
         {
             "status": "ok",
             "service": "airacare-web-backend",
-            "build": "web-highres-capture-photoroom-2026-10-07",
+            "build": "collection-metadata-polish-2026-10-07",
             "ok": True,
             "modelReady": model_error is None,
             "modelError": model_error,
@@ -297,6 +297,8 @@ def upload_captured_pet():
             _log_png_diagnostics("captured_pet_upload", image_bytes)
         except ValueError as error:
             return jsonify({"ok": False, "error": str(error)}), 400
+        image_height, image_width = decoded.shape[:2]
+        alpha_ratio = float(np.count_nonzero(decoded[:, :, 3])) / float(max(1, image_height * image_width))
 
         safe_owner = _safe_identifier(owner_id)
         public_id = f"{safe_owner}_{label}_{int(time.time())}_{uuid.uuid4().hex[:12]}"
@@ -326,6 +328,10 @@ def upload_captured_pet():
                 "imageUrl": image_url,
                 "imagePublicId": image_public_id,
                 "storageProvider": "cloudinary",
+                "imageWidth": int(image_width),
+                "imageHeight": int(image_height),
+                "imageBytes": len(image_bytes),
+                "alphaCoverage": round(alpha_ratio, 4),
             }
         )
     except Exception as error:
