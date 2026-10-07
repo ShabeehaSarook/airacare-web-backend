@@ -17,6 +17,7 @@ from typing import Any
 import cv2
 from flask import Flask, jsonify, request, send_from_directory
 import numpy as np
+import requests
 
 from src.android_tflite_detector import _threshold_for_label as android_tflite_threshold_for_label
 from src.config import TARGET_CLASSES
@@ -49,6 +50,8 @@ MAX_CAPTURE_UPLOAD_BYTES = int(os.getenv("AIRACARE_CAPTURE_UPLOAD_MAX_BYTES", st
 CLOUDINARY_FOLDER = os.getenv("AIRACARE_CLOUDINARY_FOLDER", "airacare/captured_pets")
 BACKGROUND_REMOVAL_ENGINE = os.getenv("AIRACARE_BACKGROUND_REMOVAL_ENGINE", "opencv_only")
 REMBG_MODEL_NAME = os.getenv("AIRACARE_REMBG_MODEL", "u2netp")
+PHOTOROOM_SEGMENT_URL = os.getenv("PHOTOROOM_SEGMENT_URL", "https://sdk.photoroom.com/v1/segment")
+PHOTOROOM_TIMEOUT_SECONDS = float(os.getenv("PHOTOROOM_TIMEOUT_SECONDS", "45"))
 _rembg_session = None
 
 
@@ -102,6 +105,8 @@ def _capture_storage_status() -> str:
 
 
 def _rembg_status() -> str:
+    if BACKGROUND_REMOVAL_ENGINE == "photoroom":
+        return "photoroom_configured" if os.getenv("PHOTOROOM_API_KEY") else "photoroom_api_key_missing"
     if BACKGROUND_REMOVAL_ENGINE == "opencv_only":
         return "disabled_opencv_only"
     if importlib.util.find_spec("rembg") is None:
@@ -361,12 +366,41 @@ def _safe_identifier(value: str) -> str:
 
 
 def _remove_background_best_effort(frame: np.ndarray, image_bytes: bytes) -> tuple[str, bool, str]:
+    if BACKGROUND_REMOVAL_ENGINE == "photoroom":
+        return _remove_background_photoroom(image_bytes)
     if BACKGROUND_REMOVAL_ENGINE != "opencv_only":
         try:
             return _remove_background_rembg(image_bytes)
         except Exception as error:
             logger.warning("rembg background removal failed, falling back to OpenCV: %s", error)
     return _remove_background_grabcut(frame)
+
+
+def _remove_background_photoroom(image_bytes: bytes) -> tuple[str, bool, str]:
+    api_key = os.getenv("PHOTOROOM_API_KEY")
+    if not api_key:
+        raise RuntimeError("PhotoRoom API key is not configured")
+
+    logger.info("calling PhotoRoom background removal bytes=%s", len(image_bytes))
+    response = requests.post(
+        PHOTOROOM_SEGMENT_URL,
+        headers={"x-api-key": api_key, "Accept": "image/png, application/json"},
+        files={"image_file": ("airacare_capture.png", image_bytes, "image/png")},
+        data={"format": "png", "channels": "rgba", "bg_color": "#00000000"},
+        timeout=PHOTOROOM_TIMEOUT_SECONDS,
+    )
+    if not response.ok:
+        logger.warning(
+            "PhotoRoom background removal failed status=%s body=%s",
+            response.status_code,
+            response.text[:300],
+        )
+        raise RuntimeError(f"PhotoRoom background removal failed HTTP {response.status_code}")
+
+    output_bytes = response.content
+    decoded = cv2.imdecode(np.frombuffer(output_bytes, dtype=np.uint8), cv2.IMREAD_UNCHANGED)
+    _validate_transparent_png(decoded, "PhotoRoom")
+    return "data:image/png;base64," + base64.b64encode(output_bytes).decode("ascii"), True, "photoroom_segment_api"
 
 
 def _remove_background_rembg(image_bytes: bytes) -> tuple[str, bool, str]:
@@ -387,15 +421,19 @@ def _remove_background_rembg(image_bytes: bytes) -> tuple[str, bool, str]:
         alpha_matting=False,
     )
     decoded = cv2.imdecode(np.frombuffer(output_bytes, dtype=np.uint8), cv2.IMREAD_UNCHANGED)
+    _validate_transparent_png(decoded, "rembg")
+    return "data:image/png;base64," + base64.b64encode(output_bytes).decode("ascii"), True, f"rembg_{REMBG_MODEL_NAME}"
+
+
+def _validate_transparent_png(decoded: np.ndarray | None, provider: str) -> None:
     if decoded is None or decoded.size == 0:
-        raise ValueError("rembg returned an undecodable image")
+        raise ValueError(f"{provider} returned an undecodable image")
     if decoded.ndim < 3 or decoded.shape[2] != 4:
-        raise ValueError("rembg did not return an RGBA/transparent image")
+        raise ValueError(f"{provider} did not return an RGBA/transparent PNG")
     alpha = decoded[:, :, 3]
     alpha_ratio = float(np.count_nonzero(alpha)) / float(max(1, alpha.shape[0] * alpha.shape[1]))
     if alpha_ratio < 0.03 or alpha_ratio > 0.98:
-        raise ValueError(f"rembg alpha mask is uncertain ratio={alpha_ratio:.3f}")
-    return "data:image/png;base64," + base64.b64encode(output_bytes).decode("ascii"), True, f"rembg_{REMBG_MODEL_NAME}"
+        raise ValueError(f"{provider} alpha mask is uncertain ratio={alpha_ratio:.3f}")
 
 
 def _remove_background_grabcut(frame: np.ndarray) -> tuple[str, bool, str]:
