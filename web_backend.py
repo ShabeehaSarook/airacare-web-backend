@@ -386,7 +386,7 @@ def _remove_background_photoroom(image_bytes: bytes) -> tuple[str, bool, str]:
         PHOTOROOM_SEGMENT_URL,
         headers={"x-api-key": api_key, "Accept": "image/png, application/json"},
         files={"image_file": ("airacare_capture.png", image_bytes, "image/png")},
-        data={"format": "png", "channels": "rgba"},
+        data={"format": "png", "channels": "alpha"},
         timeout=PHOTOROOM_TIMEOUT_SECONDS,
     )
     if not response.ok:
@@ -397,7 +397,8 @@ def _remove_background_photoroom(image_bytes: bytes) -> tuple[str, bool, str]:
         )
         raise RuntimeError(f"PhotoRoom background removal failed HTTP {response.status_code}")
 
-    output_bytes = _photoroom_output_bytes(response)
+    mask_bytes = _photoroom_output_bytes(response)
+    output_bytes = _compose_photoroom_alpha_result(image_bytes, mask_bytes)
     decoded = cv2.imdecode(np.frombuffer(output_bytes, dtype=np.uint8), cv2.IMREAD_UNCHANGED)
     _validate_transparent_png(decoded, "PhotoRoom")
     return "data:image/png;base64," + base64.b64encode(output_bytes).decode("ascii"), True, "photoroom_segment_api"
@@ -413,6 +414,38 @@ def _photoroom_output_bytes(response: requests.Response) -> bytes:
         encoded = str(encoded).split(",", 1)[-1]
         return base64.b64decode(encoded)
     return response.content
+
+
+def _compose_photoroom_alpha_result(image_bytes: bytes, mask_bytes: bytes) -> bytes:
+    original = cv2.imdecode(np.frombuffer(image_bytes, dtype=np.uint8), cv2.IMREAD_COLOR)
+    if original is None or original.size == 0:
+        raise ValueError("Could not decode original image for PhotoRoom alpha composition")
+
+    mask_image = cv2.imdecode(np.frombuffer(mask_bytes, dtype=np.uint8), cv2.IMREAD_UNCHANGED)
+    if mask_image is None or mask_image.size == 0:
+        raise ValueError("PhotoRoom alpha mask could not be decoded")
+
+    if mask_image.ndim == 2:
+        alpha = mask_image
+    elif mask_image.shape[2] == 4:
+        alpha = mask_image[:, :, 3]
+    else:
+        alpha = cv2.cvtColor(mask_image[:, :, :3], cv2.COLOR_BGR2GRAY)
+
+    height, width = original.shape[:2]
+    if alpha.shape[:2] != (height, width):
+        alpha = cv2.resize(alpha, (width, height), interpolation=cv2.INTER_LINEAR)
+
+    alpha_ratio = float(np.count_nonzero(alpha)) / float(max(1, alpha.shape[0] * alpha.shape[1]))
+    if alpha_ratio < 0.03 or alpha_ratio > 0.98:
+        raise ValueError(f"PhotoRoom alpha mask is uncertain ratio={alpha_ratio:.3f}")
+
+    rgba = cv2.cvtColor(original, cv2.COLOR_BGR2BGRA)
+    rgba[:, :, 3] = alpha
+    ok, encoded = cv2.imencode(".png", rgba)
+    if not ok:
+        raise ValueError("Could not encode PhotoRoom transparent PNG")
+    return encoded.tobytes()
 
 
 def _remove_background_rembg(image_bytes: bytes) -> tuple[str, bool, str]:
