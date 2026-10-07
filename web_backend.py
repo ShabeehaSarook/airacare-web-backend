@@ -225,6 +225,7 @@ def remove_background():
         image_bytes = _decode_data_url_bytes(image)
         frame = _decode_data_url(image)
         png_data_url, background_removed, method = _remove_background_best_effort(frame, image_bytes)
+        _log_png_diagnostics("remove_background_final", _decode_data_url_bytes(png_data_url))
         processing_time_ms = int((time.perf_counter() - started_at) * 1000)
         logger.info(
             "background removal completed label=%s method=%s removed=%s processing_ms=%s",
@@ -286,6 +287,11 @@ def upload_captured_pet():
             return jsonify({"ok": False, "error": "Captured pet PNG could not be decoded"}), 400
         if decoded.ndim < 3 or decoded.shape[2] != 4:
             return jsonify({"ok": False, "error": "Captured pet PNG must preserve transparency"}), 400
+        try:
+            _validate_transparent_png(decoded, "Captured pet upload")
+            _log_png_diagnostics("captured_pet_upload", image_bytes)
+        except ValueError as error:
+            return jsonify({"ok": False, "error": str(error)}), 400
 
         safe_owner = _safe_identifier(owner_id)
         public_id = f"{safe_owner}_{label}_{int(time.time())}_{uuid.uuid4().hex[:12]}"
@@ -445,7 +451,9 @@ def _compose_photoroom_alpha_result(image_bytes: bytes, mask_bytes: bytes) -> by
     ok, encoded = cv2.imencode(".png", rgba)
     if not ok:
         raise ValueError("Could not encode PhotoRoom transparent PNG")
-    return encoded.tobytes()
+    output_bytes = encoded.tobytes()
+    _log_png_diagnostics("photoroom_composed", output_bytes)
+    return output_bytes
 
 
 def _remove_background_rembg(image_bytes: bytes) -> tuple[str, bool, str]:
@@ -479,6 +487,38 @@ def _validate_transparent_png(decoded: np.ndarray | None, provider: str) -> None
     alpha_ratio = float(np.count_nonzero(alpha)) / float(max(1, alpha.shape[0] * alpha.shape[1]))
     if alpha_ratio < 0.03 or alpha_ratio > 0.98:
         raise ValueError(f"{provider} alpha mask is uncertain ratio={alpha_ratio:.3f}")
+    if int(alpha.min()) >= 255:
+        raise ValueError(f"{provider} PNG has no transparent background")
+
+
+def _log_png_diagnostics(stage: str, png_bytes: bytes) -> None:
+    decoded = cv2.imdecode(np.frombuffer(png_bytes, dtype=np.uint8), cv2.IMREAD_UNCHANGED)
+    if decoded is None or decoded.size == 0:
+        logger.warning("png diagnostics stage=%s decoded=false", stage)
+        return
+    height, width = decoded.shape[:2]
+    channels = int(decoded.shape[2]) if decoded.ndim == 3 else 1
+    has_alpha = decoded.ndim == 3 and channels == 4
+    if has_alpha:
+        alpha = decoded[:, :, 3]
+        transparent_ratio = float(np.count_nonzero(alpha == 0)) / float(max(1, alpha.shape[0] * alpha.shape[1]))
+        logger.info(
+            "png diagnostics stage=%s mode=RGBA width=%s height=%s hasAlpha=true alphaMin=%s alphaMax=%s transparentPct=%.2f",
+            stage,
+            width,
+            height,
+            int(alpha.min()),
+            int(alpha.max()),
+            transparent_ratio * 100.0,
+        )
+    else:
+        logger.warning(
+            "png diagnostics stage=%s mode=channels_%s width=%s height=%s hasAlpha=false",
+            stage,
+            channels,
+            width,
+            height,
+        )
 
 
 def _remove_background_grabcut(frame: np.ndarray) -> tuple[str, bool, str]:
