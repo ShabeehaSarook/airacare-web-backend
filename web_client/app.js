@@ -27,13 +27,14 @@ const firebaseConfig = {
 
 const DETECTION_INTERVAL_MS = 50;
 const MAX_CAPTURE_WIDTH = 512;
-const MAX_PET_CROP_SIZE = 768;
+const MAX_PET_CROP_SIZE = 1600;
+const PET_CROP_PADDING_RATIO = 0.12;
 const DETECTION_TIMEOUT_MS = 60000;
 const CAMERA_OPEN_TIMEOUT_MS = 15000;
 const VIDEO_PLAY_TIMEOUT_MS = 10000;
 const PET_LABELS = new Set(["dog", "cat"]);
 const STABLE_PET_FRAMES = 1;
-const FRONTEND_BUILD = "stale-frame-speed-fix-2026-10-04";
+const FRONTEND_BUILD = "high-res-capture-photoroom-2026-10-07";
 const CAPTURE_COOLDOWN_MS = 2500;
 const DETECTION_EVENT_SAVE_COOLDOWN_MS = 45000;
 const DEFAULT_API_BASE_URL = "https://airacare-web-backend.onrender.com";
@@ -524,7 +525,7 @@ function cropPetFromCurrentFrame(detection, result) {
     throw new Error("Invalid crop coordinates");
   }
 
-  const padding = Math.max(right - left, bottom - top) * 0.08;
+  const padding = Math.max(right - left, bottom - top) * PET_CROP_PADDING_RATIO;
   left = clamp(left - padding, 0, video.videoWidth - 1);
   top = clamp(top - padding, 0, video.videoHeight - 1);
   right = clamp(right + padding, left + 1, video.videoWidth);
@@ -546,7 +547,9 @@ function cropPetFromCurrentFrame(detection, result) {
     sourceCropHeight,
     outputScale,
     cropWidth,
-    cropHeight
+    cropHeight,
+    cropSource: "original_video_frame",
+    outputFormat: "image/png"
   });
   petCropCanvas.width = cropWidth;
   petCropCanvas.height = cropHeight;
@@ -562,7 +565,7 @@ function cropPetFromCurrentFrame(detection, result) {
     cropWidth,
     cropHeight
   );
-  const dataUrl = petCropCanvas.toDataURL("image/jpeg", 0.88);
+  const dataUrl = petCropCanvas.toDataURL("image/png");
   console.info("[Airacare] Crop data URL chars:", dataUrl.length);
   return dataUrl;
 }
@@ -856,8 +859,8 @@ async function requestCameraStream() {
   const preferred = {
     video: {
       facingMode: { ideal: "environment" },
-      width: { ideal: 1280 },
-      height: { ideal: 720 }
+      width: { ideal: 1920 },
+      height: { ideal: 1080 }
     },
     audio: false
   };

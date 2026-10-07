@@ -48,7 +48,7 @@ ALLOWED_ORIGINS = {
 
 MAX_CAPTURE_UPLOAD_BYTES = int(os.getenv("AIRACARE_CAPTURE_UPLOAD_MAX_BYTES", str(5 * 1024 * 1024)))
 CLOUDINARY_FOLDER = os.getenv("AIRACARE_CLOUDINARY_FOLDER", "airacare/captured_pets")
-BACKGROUND_REMOVAL_ENGINE = os.getenv("AIRACARE_BACKGROUND_REMOVAL_ENGINE", "opencv_only")
+BACKGROUND_REMOVAL_ENGINE = os.getenv("AIRACARE_BACKGROUND_REMOVAL_ENGINE", "photoroom_opencv_fallback")
 REMBG_MODEL_NAME = os.getenv("AIRACARE_REMBG_MODEL", "u2netp")
 PHOTOROOM_SEGMENT_URL = os.getenv("PHOTOROOM_SEGMENT_URL", "https://sdk.photoroom.com/v1/segment")
 PHOTOROOM_TIMEOUT_SECONDS = float(os.getenv("PHOTOROOM_TIMEOUT_SECONDS", "45"))
@@ -104,10 +104,15 @@ def _capture_storage_status() -> str:
     return "cloudinary_not_configured"
 
 
+def _photoroom_api_key() -> str | None:
+    return os.getenv("PHOTOROOM_API_KEY") or os.getenv("AIRACARE_PHOTOROOM_API_KEY")
+
+
 def _rembg_status() -> str:
-    if BACKGROUND_REMOVAL_ENGINE == "photoroom":
-        return "photoroom_configured" if os.getenv("PHOTOROOM_API_KEY") else "photoroom_api_key_missing"
-    if BACKGROUND_REMOVAL_ENGINE == "opencv_only":
+    engine = BACKGROUND_REMOVAL_ENGINE.lower()
+    if "photoroom" in engine:
+        return "photoroom_configured" if _photoroom_api_key() else "photoroom_not_configured_opencv_fallback"
+    if engine == "opencv_only":
         return "disabled_opencv_only"
     if importlib.util.find_spec("rembg") is None:
         return "rembg_not_installed_opencv_fallback"
@@ -144,7 +149,7 @@ def health():
         {
             "status": "ok",
             "service": "airacare-web-backend",
-            "build": "render-photoroom-alpha-validated-2026-10-07",
+            "build": "web-highres-capture-photoroom-2026-10-07",
             "ok": True,
             "modelReady": model_error is None,
             "modelError": model_error,
@@ -372,9 +377,18 @@ def _safe_identifier(value: str) -> str:
 
 
 def _remove_background_best_effort(frame: np.ndarray, image_bytes: bytes) -> tuple[str, bool, str]:
-    if BACKGROUND_REMOVAL_ENGINE == "photoroom":
-        return _remove_background_photoroom(image_bytes)
-    if BACKGROUND_REMOVAL_ENGINE != "opencv_only":
+    engine = BACKGROUND_REMOVAL_ENGINE.lower()
+    if "photoroom" in engine:
+        if _photoroom_api_key():
+            try:
+                return _remove_background_photoroom(image_bytes)
+            except Exception as error:
+                if engine == "photoroom":
+                    raise
+                logger.warning("PhotoRoom background removal failed, falling back to OpenCV: %s", error)
+        else:
+            logger.warning("PhotoRoom background removal requested but API key is not configured; using OpenCV fallback")
+    if engine not in {"opencv_only", "photoroom", "photoroom_opencv_fallback"}:
         try:
             return _remove_background_rembg(image_bytes)
         except Exception as error:
@@ -383,7 +397,7 @@ def _remove_background_best_effort(frame: np.ndarray, image_bytes: bytes) -> tup
 
 
 def _remove_background_photoroom(image_bytes: bytes) -> tuple[str, bool, str]:
-    api_key = os.getenv("PHOTOROOM_API_KEY")
+    api_key = _photoroom_api_key()
     if not api_key:
         raise RuntimeError("PhotoRoom API key is not configured")
 
@@ -403,10 +417,13 @@ def _remove_background_photoroom(image_bytes: bytes) -> tuple[str, bool, str]:
         )
         raise RuntimeError(f"PhotoRoom background removal failed HTTP {response.status_code}")
 
-    mask_bytes = _photoroom_output_bytes(response)
-    output_bytes = _compose_photoroom_alpha_result(image_bytes, mask_bytes)
+    output_bytes = _photoroom_output_bytes(response)
     decoded = cv2.imdecode(np.frombuffer(output_bytes, dtype=np.uint8), cv2.IMREAD_UNCHANGED)
-    _validate_transparent_png(decoded, "PhotoRoom")
+    if decoded is not None and decoded.ndim == 3 and decoded.shape[2] == 4:
+        _validate_transparent_png(decoded, "PhotoRoom")
+        _log_png_diagnostics("photoroom_direct", output_bytes)
+    else:
+        output_bytes = _compose_photoroom_alpha_result(image_bytes, output_bytes)
     return "data:image/png;base64," + base64.b64encode(output_bytes).decode("ascii"), True, "photoroom_segment_api"
 
 
