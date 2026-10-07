@@ -144,7 +144,7 @@ def health():
         {
             "status": "ok",
             "service": "airacare-web-backend",
-            "build": "render-photoroom-background-removal-2026-10-07",
+            "build": "render-photoroom-alpha-mask-2026-10-07",
             "ok": True,
             "modelReady": model_error is None,
             "modelError": model_error,
